@@ -15,7 +15,7 @@ coverage and a relevant live-kernel check exist.
 | kprobe-multi backend | supported | libbpf-rs multi links grouped by SKB argument position; explicit and auto modes live checked |
 | Concurrent attach/detach batches | supported | Multi links attach/detach each signature group as one kernel operation |
 | Named kernel modules / all modules | supported | `--kmods` and `--all-kmods` parse base/split BTF with module-qualified plan and capture provenance |
-| pcap expression filter | partial | rust-pcap/libpcap compiler plus verifier-bounded in-kernel cBPF VM; currently capped at 128 instructions versus pwru's 4096 |
+| pcap expression filter | supported | rust-pcap/libpcap compiler plus verifier-bounded in-kernel cBPF VM; validates and accepts up to pwru's 4096-instruction ceiling |
 | Tunnel L2/L3 pcap filters | supported | Independent `--filter-tunnel-pcap-l2` and `--filter-tunnel-pcap-l3` validated cBPF predicates; both predicates are ANDed and non-tunnel SKBs retain pwru's pass-through semantics; isolated VXLAN live gate |
 | Network namespace filter | partial | Path/inode resolution and early BPF predicate supported; socket fallback and ifname lookup inside another netns remain |
 | Interface filter | partial | Numeric ifindex and current-netns ifname supported; cross-netns ifname lookup remains |

@@ -52,7 +52,7 @@
 #define IPPROTO_IPV6_DSTOPTS 60
 #define IPPROTO_ICMPV6 58
 #define MAX_IPV6_EXTENSION_HEADERS 8
-#define MAX_CBPF_INSNS 128
+#define MAX_CBPF_INSNS 4096
 #define CBPF_MEMWORDS 16
 
 #define BPF_CLASS(code) ((code) & 0x07)

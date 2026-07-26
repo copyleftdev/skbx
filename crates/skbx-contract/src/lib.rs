@@ -128,9 +128,9 @@ impl Describe {
                 },
                 Capability {
                     name: "pcap-filter",
-                    status: partial.clone(),
+                    status: supported.clone(),
                     requires: "libpcap-compatible compiler",
-                    cost: "up to 128 bounded cBPF steps per observed call",
+                    cost: "up to 4096 bounded cBPF steps per configured predicate",
                     description: "compile libpcap syntax and execute validated cBPF in kernel space",
                 },
                 Capability {

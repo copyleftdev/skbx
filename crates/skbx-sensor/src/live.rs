@@ -17,7 +17,7 @@ struct Align8<const N: usize>([u8; N]);
 static BPF_OBJECT: &Align8<{ include_bytes!(env!("SKBX_BPF_OBJ")).len() }> =
     &Align8(*include_bytes!(env!("SKBX_BPF_OBJ")));
 
-pub const MAX_CBPF_INSNS: usize = 128;
+pub const MAX_CBPF_INSNS: usize = 4096;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

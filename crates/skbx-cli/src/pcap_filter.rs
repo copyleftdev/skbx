@@ -21,9 +21,12 @@ const _: () = {
 };
 
 pub fn compile(expression: Option<&str>) -> Result<(CbpfProgram, CbpfProgram)> {
-    let Some(expression) = expression.filter(|expression| !expression.is_empty()) else {
+    let Some(expression) = expression else {
         return Ok((CbpfProgram::default(), CbpfProgram::default()));
     };
+    if expression.is_empty() {
+        bail!("pcap filter expression is empty");
+    }
     Ok((
         compile_for_linktype(expression, Linktype::ETHERNET)
             .context("compile Ethernet pcap filter")?,
@@ -49,9 +52,12 @@ fn compile_optional(
     linktype: Linktype,
     label: &str,
 ) -> Result<CbpfProgram> {
-    let Some(expression) = expression.filter(|expression| !expression.is_empty()) else {
+    let Some(expression) = expression else {
         return Ok(CbpfProgram::default());
     };
+    if expression.is_empty() {
+        bail!("pcap filter expression is empty");
+    }
     compile_for_linktype(expression, linktype)
         .with_context(|| format!("compile {label} pcap filter"))
 }
@@ -184,6 +190,10 @@ mod tests {
         let (l2, l3) = compile(None).unwrap();
         assert_eq!(l2.len, 0);
         assert_eq!(l3.len, 0);
+        assert!(compile(Some("")).is_err());
+        assert!(compile_l2(Some("")).is_err());
+        assert!(compile_l3(Some("")).is_err());
+        assert_eq!(MAX_CBPF_INSNS, 4096);
     }
 
     #[test]
