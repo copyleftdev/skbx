@@ -22,7 +22,7 @@ coverage and a relevant live-kernel check exist.
 | Mark/mask filter | supported | Decimal/hex `mark[/mask]`, immutable rodata configuration and early BPF predicate |
 | Arbitrary SKB expression filter | missing | Needs a constrained BTF-checked expression compiler |
 | Track SKB across transformations | partial | Bounded LRU identity map, clone/copy propagation and `kfree_skbmem` lifetime deletion supported; veth/XDP conversion remains |
-| Track freed SKB by stack ID | partial | Bidirectional bounded stack-anchor maps and `kfree_skbmem` cleanup are implemented; direct-to-associated live gate passes, while an after-free bridge gate remains |
+| Track logically freed SKB by stack ID | supported | Bidirectional bounded stack-anchor maps preserve identity through non-SKB teardown calls and delete both directions at `kfree_skbmem`; live gate requires ordered, read-clean `consume_skb` → `dst_release` → `kmem_cache_free` evidence on one SKB |
 | Trace non-SKB functions | supported | `--filter-non-skb-funcs` validates function existence in BTF, attaches through either backend and emits explicit `association: stack`; live checked with `ip_rcv` → `fib_table_lookup` same-SKB evidence |
 | Trace BPF helper calls | missing | Architecture-aware helper discovery and non-SKB association |
 | Trace TC programs | missing | Enumerate programs and attach fentry dynamically |

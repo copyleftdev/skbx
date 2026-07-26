@@ -110,7 +110,11 @@ outer/inner filtering and tuple evidence, then removes both namespaces.
 cross-namespace interface lookup and the socket namespace fallback.
 `sudo scripts/live-stack-test.sh target/debug/skbx` verifies that a direct
 `ip_rcv` observation and a requested non-SKB `fib_table_lookup` call retain
-the same evidence-addressed SKB identity.
+the same evidence-addressed SKB identity. `sudo
+scripts/live-stack-lifetime-test.sh target/debug/skbx` verifies ordered
+same-SKB evidence across the logical-free teardown path:
+`consume_skb` → `dst_release` → `kmem_cache_free`. The association is removed
+at `kfree_skbmem`, before the SKB allocation itself is returned.
 
 ## Architecture
 
