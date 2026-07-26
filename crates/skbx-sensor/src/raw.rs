@@ -11,6 +11,8 @@ pub const READ_TUPLE_FAILED: u16 = 1 << 7;
 pub const READ_CB_FAILED: u16 = 1 << 8;
 pub const READ_CALLER_FAILED: u16 = 1 << 9;
 pub const READ_TUNNEL_TUPLE_FAILED: u16 = 1 << 10;
+pub const ASSOCIATION_DIRECT: u8 = 0;
+pub const ASSOCIATION_STACK: u8 = 1;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -47,7 +49,8 @@ pub struct RawTraceEvent {
     pub tunnel_tuple: RawPacketTuple,
     pub control_buffer: [u32; 5],
     pub command: [u8; 16],
-    pub _pad0: u32,
+    pub association: u8,
+    pub _pad0: [u8; 3],
     pub stack_id: i64,
     pub parameter_second: u64,
     pub parameter_third: u64,

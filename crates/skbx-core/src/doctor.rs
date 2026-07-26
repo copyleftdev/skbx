@@ -48,6 +48,30 @@ pub fn doctor() -> DoctorReport {
         true,
         "Grant read access to /proc/kallsyms for symbol enrichment.",
     ));
+    let kernel_config_path = format!("/boot/config-{kernel_release}");
+    let frame_pointers = fs::read_to_string(&kernel_config_path).ok().map(|config| {
+        config.lines().any(|line| {
+            matches!(
+                line,
+                "CONFIG_FRAME_POINTER=y" | "CONFIG_UNWINDER_FRAME_POINTER=y"
+            )
+        })
+    });
+    checks.push(DoctorCheck {
+        name: "frame_pointers".into(),
+        status: match frame_pointers {
+            Some(true) => CheckStatus::Pass,
+            Some(false) | None => CheckStatus::Warn,
+        },
+        evidence: match frame_pointers {
+            Some(true) => format!("{kernel_config_path}: enabled"),
+            Some(false) => format!("{kernel_config_path}: not enabled"),
+            None => format!("{kernel_config_path}: unavailable"),
+        },
+        remediation: (frame_pointers != Some(true)).then(|| {
+            "Stack-associated non-SKB tracing requires kernel frame pointers; direct SKB capture remains available.".into()
+        }),
+    });
 
     let effective_uid = unsafe { libc_geteuid() };
     let effective_caps = effective_capabilities();

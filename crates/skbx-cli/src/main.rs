@@ -3,12 +3,12 @@ use clap::{Parser, Subcommand, ValueEnum};
 use nix::sched::{CloneFlags, setns};
 use skbx_contract::{
     CONTRACT_VERSION, CaptureEnd, CaptureFilters, CaptureLimits, CaptureStart, Describe, Envelope,
-    FunctionRef, PacketMeta, PacketTuple, PresentedTimestamp, StopReason, TimestampMode,
-    TraceEvent,
+    EventAssociation, FunctionRef, PacketMeta, PacketTuple, PresentedTimestamp, StopReason,
+    TimestampMode, TraceEvent,
 };
 use skbx_core::{
-    BoundedMap, DEFAULT_BTF_PATH, DropReasonTable, SymbolTable, build_probe_plan, capture_id,
-    doctor, event_handle, explain_file, replay,
+    BoundedMap, DEFAULT_BTF_PATH, DropReasonTable, SymbolTable, build_probe_plan_with_non_skb,
+    capture_id, doctor, event_handle, explain_file, replay,
 };
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
@@ -67,6 +67,9 @@ enum Command {
         /// Select BTF-discovered functions by a whole-name regular expression.
         #[arg(long)]
         filter_func: Option<String>,
+        /// Trace these BTF-validated functions through bounded stack association.
+        #[arg(long, value_delimiter = ',')]
+        filter_non_skb_funcs: Vec<String>,
         /// Read target kernel BTF from this path.
         #[arg(long)]
         kernel_btf: Option<PathBuf>,
@@ -86,6 +89,9 @@ enum Command {
         /// Select BTF-discovered functions by a whole-name regular expression.
         #[arg(long)]
         filter_func: Option<String>,
+        /// Trace these BTF-validated functions through bounded stack association.
+        #[arg(long, value_delimiter = ',')]
+        filter_non_skb_funcs: Vec<String>,
         /// Read target kernel BTF from this path.
         #[arg(long)]
         kernel_btf: Option<PathBuf>,
@@ -243,14 +249,16 @@ fn run(cli: Cli) -> Result<u8> {
         Command::Plan {
             probes,
             filter_func,
+            filter_non_skb_funcs,
             kernel_btf,
             kmods,
             all_kmods,
             json,
         } => {
-            let plan = build_probe_plan(
+            let plan = build_probe_plan_with_non_skb(
                 &probes,
                 filter_func.as_deref(),
+                &filter_non_skb_funcs,
                 kernel_btf.as_deref(),
                 &kmods,
                 all_kmods,
@@ -291,6 +299,7 @@ fn run(cli: Cli) -> Result<u8> {
         Command::Capture {
             probes,
             filter_func,
+            filter_non_skb_funcs,
             kernel_btf,
             kmods,
             all_kmods,
@@ -316,6 +325,7 @@ fn run(cli: Cli) -> Result<u8> {
         } => capture(
             &probes,
             filter_func.as_deref(),
+            &filter_non_skb_funcs,
             kernel_btf.as_deref(),
             &kmods,
             all_kmods,
@@ -402,6 +412,7 @@ fn run(cli: Cli) -> Result<u8> {
 fn capture(
     requested: &[String],
     filter_func: Option<&str>,
+    non_skb_functions: &[String],
     kernel_btf: Option<&Path>,
     modules: &[String],
     all_modules: bool,
@@ -442,6 +453,7 @@ fn capture(
     filters.tunnel_pcap_l2 = filter_tunnel_pcap_l2.map(str::to_owned);
     filters.tunnel_pcap_l3 = filter_tunnel_pcap_l3.map(str::to_owned);
     filters.track_skb = filter_track_skb;
+    filters.track_stack = !non_skb_functions.is_empty();
     if filter_track_skb
         && filters.mark_mask == 0
         && filters.ifindex == 0
@@ -452,7 +464,14 @@ fn capture(
     {
         bail!("--filter-track-skb requires at least one packet filter");
     }
-    let plan = build_probe_plan(requested, filter_func, kernel_btf, modules, all_modules)?;
+    let plan = build_probe_plan_with_non_skb(
+        requested,
+        filter_func,
+        non_skb_functions,
+        kernel_btf,
+        modules,
+        all_modules,
+    )?;
     let attachments: Vec<_> = plan
         .probes
         .iter()
@@ -534,6 +553,7 @@ fn capture(
             output_stack: u32::from(output_stack),
             track_skb: u32::from(filter_track_skb),
             output_tunnel: u32::from(output_tunnel),
+            track_stack: u32::from(filters.track_stack),
             pcap_l2,
             pcap_l3,
             tunnel_pcap_l2,
@@ -740,6 +760,7 @@ fn resolve_filters(
         ifindex: resolved_ifindex,
         netns,
         track_skb: false,
+        track_stack: false,
         pcap: None,
         tunnel_pcap_l2: None,
         tunnel_pcap_l3: None,
@@ -852,6 +873,11 @@ fn convert_event(
             address: format!("{:#x}", raw.function_ip),
             symbol: function_symbol,
         },
+        association: if raw.association == skbx_sensor::ASSOCIATION_STACK {
+            EventAssociation::Stack
+        } else {
+            EventAssociation::Direct
+        },
         caller: (raw.caller_ip != 0).then(|| FunctionRef {
             address: format!("{:#x}", raw.caller_ip),
             symbol: symbols.resolve(raw.caller_ip).map(str::to_owned),
@@ -931,14 +957,14 @@ fn write_start(writer: &mut impl Write, format: OutputFormat, start: &CaptureSta
             if start.timestamp_mode == "none" {
                 writeln!(
                     writer,
-                    "{:<5} {:<8} {:<18} {:<8} FUNCTION",
-                    "CPU", "PID", "SKB", "LEN"
+                    "{:<5} {:<8} {:<18} {:<8} {:<7} FUNCTION",
+                    "CPU", "PID", "SKB", "LEN", "ASSOC"
                 )?;
             } else {
                 writeln!(
                     writer,
-                    "{:<30} {:<5} {:<8} {:<18} {:<8} FUNCTION",
-                    "TIME", "CPU", "PID", "SKB", "LEN"
+                    "{:<30} {:<5} {:<8} {:<18} {:<8} {:<7} FUNCTION",
+                    "TIME", "CPU", "PID", "SKB", "LEN", "ASSOC"
                 )?;
             }
             Ok(())
@@ -955,17 +981,27 @@ fn write_event(writer: &mut impl Write, format: OutputFormat, event: &TraceEvent
                 .symbol
                 .as_deref()
                 .unwrap_or(&event.function.address);
+            let association = match event.association {
+                EventAssociation::Direct => "direct",
+                EventAssociation::Stack => "stack",
+            };
             if let Some(timestamp) = &event.presentation_timestamp {
                 writeln!(
                     writer,
-                    "{:<30} {:<5} {:<8} {:<18} {:<8} {}",
-                    timestamp.display, event.cpu, event.pid, event.skb, event.packet.len, function
+                    "{:<30} {:<5} {:<8} {:<18} {:<8} {:<7} {}",
+                    timestamp.display,
+                    event.cpu,
+                    event.pid,
+                    event.skb,
+                    event.packet.len,
+                    association,
+                    function
                 )?;
             } else {
                 writeln!(
                     writer,
-                    "{:<5} {:<8} {:<18} {:<8} {}",
-                    event.cpu, event.pid, event.skb, event.packet.len, function
+                    "{:<5} {:<8} {:<18} {:<8} {:<7} {}",
+                    event.cpu, event.pid, event.skb, event.packet.len, association, function
                 )?;
             }
             Ok(())
@@ -1082,6 +1118,19 @@ mod tests {
         assert_eq!(tunnel_tuple.destination, "10.42.0.2");
         assert_eq!(tunnel_tuple.icmp_type, Some(8));
         assert_eq!(tunnel_tuple.icmp_code, Some(0));
+
+        let associated = convert_event(
+            "capture",
+            1,
+            skbx_sensor::RawTraceEvent {
+                association: skbx_sensor::ASSOCIATION_STACK,
+                ..raw
+            },
+            &symbols,
+            &drop_reasons,
+            &[],
+        );
+        assert_eq!(associated.association, EventAssociation::Stack);
     }
 
     #[test]

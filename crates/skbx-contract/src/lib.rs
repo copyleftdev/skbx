@@ -176,6 +176,13 @@ impl Describe {
                     description: "continue matching an SKB and propagate identity through clone/copy",
                 },
                 Capability {
+                    name: "stack-associated-functions",
+                    status: supported.clone(),
+                    requires: "kernel frame pointers and bounded LRU maps",
+                    cost: "up to 50 frame-pointer reads on selected probes",
+                    description: "associate explicitly requested non-SKB functions with packet evidence while labeling the inference source",
+                },
+                Capability {
                     name: "skb-drop-reason",
                     status: supported.clone(),
                     requires: "kernel BTF enum and a supported drop function",
@@ -310,6 +317,14 @@ pub struct FunctionRef {
     pub symbol: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventAssociation {
+    #[default]
+    Direct,
+    Stack,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TraceEvent {
     pub schema: String,
@@ -324,6 +339,8 @@ pub struct TraceEvent {
     pub command: String,
     pub skb: String,
     pub function: FunctionRef,
+    #[serde(default)]
+    pub association: EventAssociation,
     #[serde(default)]
     pub caller: Option<FunctionRef>,
     #[serde(default)]
@@ -381,6 +398,8 @@ pub struct CaptureFilters {
     pub ifindex: u32,
     pub netns: u32,
     pub track_skb: bool,
+    #[serde(default)]
+    pub track_stack: bool,
     pub pcap: Option<String>,
     #[serde(default)]
     pub tunnel_pcap_l2: Option<String>,
@@ -541,6 +560,7 @@ pub fn json_schema() -> serde_json::Value {
                     "command": {"type": "string"},
                     "skb": {"type": "string"},
                     "function": {"$ref": "#/$defs/FunctionRef"},
+                    "association": {"enum": ["direct", "stack"]},
                     "caller": {
                         "oneOf": [
                             {"$ref": "#/$defs/FunctionRef"},
@@ -608,6 +628,7 @@ pub fn json_schema() -> serde_json::Value {
                     "ifindex": {"type": "integer", "minimum": 0, "maximum": 4294967295_u64},
                     "netns": {"type": "integer", "minimum": 0, "maximum": 4294967295_u64},
                     "track_skb": {"type": "boolean"},
+                    "track_stack": {"type": "boolean"},
                     "pcap": {"type": ["string", "null"]},
                     "tunnel_pcap_l2": {"type": ["string", "null"]},
                     "tunnel_pcap_l3": {"type": ["string", "null"]}

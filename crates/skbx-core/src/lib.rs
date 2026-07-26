@@ -12,6 +12,6 @@ pub use bounded::BoundedMap;
 pub use doctor::{DoctorCheck, DoctorReport, doctor};
 pub use drop_reason::DropReasonTable;
 pub use evidence::{capture_id, event_handle, route_handle};
-pub use plan::{DEFAULT_BTF_PATH, PlanError, build_probe_plan};
+pub use plan::{DEFAULT_BTF_PATH, PlanError, build_probe_plan, build_probe_plan_with_non_skb};
 pub use replay::{Explanation, ReplayError, explain, explain_file, replay};
 pub use symbols::SymbolTable;

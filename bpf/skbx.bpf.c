@@ -15,6 +15,7 @@
 #define PT_REGS_PARM5(ctx) ((ctx)->r8)
 #define PT_REGS_RC(ctx) ((ctx)->ax)
 #define PT_REGS_IP(ctx) ((ctx)->ip)
+#define PT_REGS_FP(ctx) ((ctx)->bp)
 #elif defined(__TARGET_ARCH_arm64)
 #define PT_REGS_PARM1(ctx) ((ctx)->regs[0])
 #define PT_REGS_PARM2(ctx) ((ctx)->regs[1])
@@ -23,6 +24,7 @@
 #define PT_REGS_PARM5(ctx) ((ctx)->regs[4])
 #define PT_REGS_RC(ctx) ((ctx)->regs[0])
 #define PT_REGS_IP(ctx) ((ctx)->pc)
+#define PT_REGS_FP(ctx) ((ctx)->regs[29])
 #else
 #error "unsupported target architecture"
 #endif
@@ -38,6 +40,8 @@
 #define READ_CB_FAILED       (1u << 8)
 #define READ_CALLER_FAILED   (1u << 9)
 #define READ_TUNNEL_TUPLE_FAILED (1u << 10)
+#define ASSOCIATION_DIRECT 0
+#define ASSOCIATION_STACK  1
 
 #define ETH_P_IP   0x0800
 #define ETH_P_IPV6 0x86dd
@@ -52,6 +56,7 @@
 #define IPPROTO_IPV6_DSTOPTS 60
 #define IPPROTO_ICMPV6 58
 #define MAX_IPV6_EXTENSION_HEADERS 8
+#define MAX_ASSOCIATION_STACK_DEPTH 50
 #define MAX_CBPF_INSNS 4096
 #define CBPF_MEMWORDS 16
 
@@ -146,7 +151,8 @@ struct skbx_trace_event {
     struct skbx_packet_tuple tunnel_tuple;
     __u32 control_buffer[5];
     char command[16];
-    __u32 _pad0;
+    __u8 association;
+    __u8 _pad0[3];
     __s64 stack_id;
     __u64 parameter_second;
     __u64 parameter_third;
@@ -166,6 +172,7 @@ struct skbx_config {
     __u32 output_stack;
     __u32 track_skb;
     __u32 output_tunnel;
+    __u32 track_stack;
     struct cbpf_program pcap_l2;
     struct cbpf_program pcap_l3;
     struct cbpf_program tunnel_pcap_l2;
@@ -206,6 +213,20 @@ struct {
     __type(key, __u64);
     __type(value, __u8);
 } pending_clones SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65536);
+    __type(key, __u64);
+    __type(value, __u64);
+} stack_anchor_skb SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65536);
+    __type(key, __u64);
+    __type(value, __u64);
+} skb_stack_anchor SEC(".maps");
 
 static __always_inline struct kernel_stats *stats(void)
 {
@@ -697,11 +718,51 @@ static __always_inline int should_trace(struct sk_buff *skb,
     return matched;
 }
 
-static __always_inline int trace_skb(struct pt_regs *ctx, struct sk_buff *skb)
+static __always_inline __u64 get_stack_anchor(struct pt_regs *ctx)
+{
+    __u64 frame = PT_REGS_FP(ctx);
+
+#pragma clang loop unroll(full)
+    for (int depth = 0; depth < MAX_ASSOCIATION_STACK_DEPTH; depth++) {
+        __u64 caller = 0;
+
+        if (!frame ||
+            bpf_probe_read_kernel(&caller, sizeof(caller), (void *)frame) ||
+            !caller || caller <= frame)
+            break;
+        frame = caller;
+    }
+    return frame;
+}
+
+static __always_inline void associate_stack(struct pt_regs *ctx,
+                                            struct sk_buff *skb)
+{
+    __u64 skb_addr = (__u64)skb;
+    __u64 anchor = get_stack_anchor(ctx);
+    __u64 *old_anchor;
+
+    if (!anchor || !skb_addr)
+        return;
+    old_anchor = bpf_map_lookup_elem(&skb_stack_anchor, &skb_addr);
+    if (old_anchor && *old_anchor != anchor) {
+        __u64 stale = *old_anchor;
+        bpf_map_delete_elem(&stack_anchor_skb, &stale);
+    }
+    bpf_map_update_elem(&stack_anchor_skb, &anchor, &skb_addr, 0);
+    bpf_map_update_elem(&skb_stack_anchor, &skb_addr, &anchor, 0);
+}
+
+static __always_inline int trace_skb_associated(struct pt_regs *ctx,
+                                                struct sk_buff *skb,
+                                                __u8 association)
 {
     struct kernel_stats *counters = stats();
-    if (!should_trace(skb, counters))
+    if (association == ASSOCIATION_DIRECT &&
+        !should_trace(skb, counters))
         return 0;
+    if (association == ASSOCIATION_DIRECT && CONFIG.track_stack)
+        associate_stack(ctx, skb);
     struct skbx_trace_event *event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
 
     if (!event) {
@@ -712,6 +773,7 @@ static __always_inline int trace_skb(struct pt_regs *ctx, struct sk_buff *skb)
 
     __builtin_memset(event, 0, sizeof(*event));
     event->stack_id = -1;
+    event->association = association;
     event->timestamp_ns = bpf_ktime_get_ns();
     event->skb_addr = (__u64)skb;
     event->function_ip = (__u64)PT_REGS_IP(ctx);
@@ -771,6 +833,11 @@ static __always_inline int trace_skb(struct pt_regs *ctx, struct sk_buff *skb)
     return 0;
 }
 
+static __always_inline int trace_skb(struct pt_regs *ctx, struct sk_buff *skb)
+{
+    return trace_skb_associated(ctx, skb, ASSOCIATION_DIRECT);
+}
+
 #define DEFINE_SKB_PROBE(position)                                      \
     SEC("kprobe")                                                       \
     int skbx_skb_arg##position(struct pt_regs *ctx)                     \
@@ -784,6 +851,45 @@ DEFINE_SKB_PROBE(2)
 DEFINE_SKB_PROBE(3)
 DEFINE_SKB_PROBE(4)
 DEFINE_SKB_PROBE(5)
+
+SEC("kprobe")
+int skbx_stack_associated(struct pt_regs *ctx)
+{
+    __u64 anchor;
+    __u64 *skb_addr;
+
+    if (!CONFIG.track_stack)
+        return 0;
+    anchor = get_stack_anchor(ctx);
+    if (!anchor)
+        return 0;
+    skb_addr = bpf_map_lookup_elem(&stack_anchor_skb, &anchor);
+    if (!skb_addr || !*skb_addr)
+        return 0;
+    return trace_skb_associated(ctx, (struct sk_buff *)*skb_addr,
+                               ASSOCIATION_STACK);
+}
+
+SEC("kprobe")
+int skbx_skb_lifetime_end(struct pt_regs *ctx)
+{
+    __u64 skb_addr = PT_REGS_PARM1(ctx);
+    __u64 *anchor;
+
+    if ((!CONFIG.track_stack && !CONFIG.track_skb) || !skb_addr)
+        return 0;
+    if (CONFIG.track_skb)
+        bpf_map_delete_elem(&tracked_skbs, &skb_addr);
+    if (!CONFIG.track_stack)
+        return 0;
+    anchor = bpf_map_lookup_elem(&skb_stack_anchor, &skb_addr);
+    if (anchor) {
+        __u64 key = *anchor;
+        bpf_map_delete_elem(&stack_anchor_skb, &key);
+    }
+    bpf_map_delete_elem(&skb_stack_anchor, &skb_addr);
+    return 0;
+}
 
 SEC("kprobe")
 int skbx_clone_entry(struct pt_regs *ctx)

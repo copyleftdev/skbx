@@ -21,9 +21,9 @@ coverage and a relevant live-kernel check exist.
 | Interface filter | supported | Numeric ifindex plus current/selected-netns ifname resolution; cross-netns lookup uses `nix` `setns` with mandatory restoration and is covered by an isolated live gate |
 | Mark/mask filter | supported | Decimal/hex `mark[/mask]`, immutable rodata configuration and early BPF predicate |
 | Arbitrary SKB expression filter | missing | Needs a constrained BTF-checked expression compiler |
-| Track SKB across transformations | partial | Bounded LRU identity map and clone/copy propagation supported; veth/XDP conversion remains |
-| Track freed SKB by stack ID | missing | Stack map and lifetime termination hooks |
-| Trace non-SKB functions | missing | Stack-ID association with bounded lifetime |
+| Track SKB across transformations | partial | Bounded LRU identity map, clone/copy propagation and `kfree_skbmem` lifetime deletion supported; veth/XDP conversion remains |
+| Track freed SKB by stack ID | partial | Bidirectional bounded stack-anchor maps and `kfree_skbmem` cleanup are implemented; direct-to-associated live gate passes, while an after-free bridge gate remains |
+| Trace non-SKB functions | supported | `--filter-non-skb-funcs` validates function existence in BTF, attaches through either backend and emits explicit `association: stack`; live checked with `ip_rcv` → `fib_table_lookup` same-SKB evidence |
 | Trace BPF helper calls | missing | Architecture-aware helper discovery and non-SKB association |
 | Trace TC programs | missing | Enumerate programs and attach fentry dynamically |
 | Trace XDP programs | missing | XDP metadata path and fentry/fexit correlation |

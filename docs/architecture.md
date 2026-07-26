@@ -77,6 +77,7 @@ filesystem reads.
 ### Phase 1 — vertical slice
 
 - BTF-discovered SKB probes in argument positions 1–5;
+- BTF-validated non-SKB probes with explicit bounded stack association;
 - individual and kprobe-multi attachment backends;
 - metadata capture;
 - named SKB drop reasons;

@@ -54,6 +54,7 @@ pub struct SensorConfig {
     pub output_stack: u32,
     pub track_skb: u32,
     pub output_tunnel: u32,
+    pub track_stack: u32,
     pub pcap_l2: CbpfProgram,
     pub pcap_l3: CbpfProgram,
     pub tunnel_pcap_l2: CbpfProgram,
@@ -156,6 +157,11 @@ impl LiveSensor {
             .iter()
             .filter_map(|probe| probe.skb_argument)
             .collect();
+        let non_skb_functions: Vec<String> = probes
+            .iter()
+            .filter(|probe| probe.available && probe.skb_argument.is_none())
+            .map(|probe| probe.function.clone())
+            .collect();
         let mut builder = ObjectBuilder::default();
         if let Some(path) = btf_path {
             builder
@@ -174,9 +180,17 @@ impl LiveSensor {
                 .and_then(|value| value.parse::<u8>().ok());
             let active = argument.is_some_and(|value| active_arguments.contains(&value))
                 || (config.track_skb != 0
-                    && matches!(name.as_ref(), "skbx_clone_entry" | "skbx_clone_exit"));
+                    && matches!(name.as_ref(), "skbx_clone_entry" | "skbx_clone_exit"))
+                || ((config.track_skb != 0 || config.track_stack != 0)
+                    && name == "skbx_skb_lifetime_end")
+                || (config.track_stack != 0
+                    && !non_skb_functions.is_empty()
+                    && name == "skbx_stack_associated");
             program.set_autoload(active);
-            if active && argument.is_some() && mode == AttachmentMode::KprobeMulti {
+            if active
+                && (argument.is_some() || name == "skbx_stack_associated")
+                && mode == AttachmentMode::KprobeMulti
+            {
                 program.set_attach_type(ProgramAttachType::KprobeMulti);
             }
         }
@@ -219,6 +233,54 @@ impl LiveSensor {
                 }
                 AttachmentMode::Auto => unreachable!("resolved before attach_once"),
             }
+        }
+        if config.track_stack != 0 && !non_skb_functions.is_empty() {
+            let program = object
+                .progs_mut()
+                .find(|program| program.name() == OsStr::new("skbx_stack_associated"))
+                .ok_or_else(|| {
+                    LiveError::Program("program skbx_stack_associated not found".into())
+                })?;
+            match mode {
+                AttachmentMode::KprobeMulti => {
+                    links.push(
+                        program
+                            .attach_kprobe_multi(false, non_skb_functions.clone())
+                            .map_err(|error| {
+                                LiveError::Program(format!(
+                                    "attach stack-associated kprobe-multi group: {error}"
+                                ))
+                            })?,
+                    );
+                }
+                AttachmentMode::Kprobe => {
+                    for function in &non_skb_functions {
+                        links.push(program.attach_kprobe(false, function).map_err(|error| {
+                            LiveError::Program(format!(
+                                "attach stack-associated probe to {function}: {error}"
+                            ))
+                        })?);
+                    }
+                }
+                AttachmentMode::Auto => unreachable!("resolved before attach_once"),
+            }
+        }
+        if config.track_skb != 0 || config.track_stack != 0 {
+            let program = object
+                .progs_mut()
+                .find(|program| program.name() == OsStr::new("skbx_skb_lifetime_end"))
+                .ok_or_else(|| {
+                    LiveError::Program("program skbx_skb_lifetime_end not found".into())
+                })?;
+            links.push(
+                program
+                    .attach_kprobe(false, "kfree_skbmem")
+                    .map_err(|error| {
+                        LiveError::Program(format!(
+                            "attach SKB lifetime probe to kfree_skbmem: {error}"
+                        ))
+                    })?,
+            );
         }
         if config.track_skb != 0 {
             for (program_name, retprobe) in [("skbx_clone_entry", false), ("skbx_clone_exit", true)]

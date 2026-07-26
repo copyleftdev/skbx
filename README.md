@@ -36,6 +36,8 @@ split BTF. It records:
 - IPv4/IPv6 addresses (including bounded IPv6 extension chains),
   TCP/UDP ports, ICMP type/code and TCP flags;
 - optional inner tunnel tuples from kernel-maintained SKB header offsets;
+- BTF-validated non-SKB functions associated through bounded frame-pointer
+  anchors, with every event labeled `direct` or `stack`;
 - caller, network namespace, MTU and the SKB control buffer;
 - BTF-decoded SKB drop reasons on supported drop functions;
 - kernel ring-buffer reserve failures.
@@ -106,6 +108,9 @@ target/debug/skbx` creates two temporary network namespaces, verifies VXLAN
 outer/inner filtering and tuple evidence, then removes both namespaces.
 `sudo scripts/live-netns-test.sh target/debug/skbx` similarly verifies
 cross-namespace interface lookup and the socket namespace fallback.
+`sudo scripts/live-stack-test.sh target/debug/skbx` verifies that a direct
+`ip_rcv` observation and a requested non-SKB `fib_table_lookup` call retain
+the same evidence-addressed SKB identity.
 
 ## Architecture
 

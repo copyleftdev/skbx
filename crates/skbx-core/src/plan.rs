@@ -47,6 +47,24 @@ pub fn build_probe_plan(
     modules: &[String],
     all_modules: bool,
 ) -> Result<ProbePlan, PlanError> {
+    build_probe_plan_with_non_skb(
+        exact_names,
+        filter_pattern,
+        &[],
+        btf_path,
+        modules,
+        all_modules,
+    )
+}
+
+pub fn build_probe_plan_with_non_skb(
+    exact_names: &[String],
+    filter_pattern: Option<&str>,
+    non_skb_names: &[String],
+    btf_path: Option<&Path>,
+    modules: &[String],
+    all_modules: bool,
+) -> Result<ProbePlan, PlanError> {
     if !exact_names.is_empty() && filter_pattern.is_some() {
         return Err(PlanError::ConflictingSelectors);
     }
@@ -59,6 +77,7 @@ pub fn build_probe_plan(
         .map(|pattern| Regex::new(&format!("^(?:{pattern})$")))
         .transpose()?;
     let exact: BTreeSet<&str> = exact_names.iter().map(String::as_str).collect();
+    let non_skb: BTreeSet<&str> = non_skb_names.iter().map(String::as_str).collect();
     let selected = |name: &str| {
         if !exact.is_empty() {
             exact.contains(name)
@@ -77,11 +96,14 @@ pub fn build_probe_plan(
 
     let mut inspection_failures = 0_u64;
     let mut discovered = Vec::<(String, Option<String>, u8)>::new();
+    let mut discovered_non_skb = Vec::<(String, Option<String>)>::new();
     discover_btf(
         &btf,
         None,
         &selected,
+        &non_skb,
         &mut discovered,
+        &mut discovered_non_skb,
         &mut inspection_failures,
     )?;
 
@@ -101,7 +123,9 @@ pub fn build_probe_plan(
             &split,
             Some(&module),
             &selected,
+            &non_skb,
             &mut discovered,
+            &mut discovered_non_skb,
             &mut inspection_failures,
         )?;
     }
@@ -130,10 +154,35 @@ pub fn build_probe_plan(
         })
         .collect();
 
+    probes.extend(
+        discovered_non_skb
+            .into_iter()
+            .map(|(function, module)| ProbeSpec {
+                available: available.contains(&function),
+                function,
+                source: if module.is_some() {
+                    ProbeSource::KernelModuleBtf
+                } else {
+                    ProbeSource::KernelBtf
+                },
+                module: module.clone(),
+                skb_argument: None,
+                assumption: match module {
+                    Some(module) => format!(
+                        "split BTF module {module} validates function existence; SKB association uses a bounded stack anchor"
+                    ),
+                    None => "kernel BTF validates function existence; SKB association uses a bounded stack anchor".into(),
+                },
+            }),
+    );
+
     // Exact requests that are missing or do not accept an SKB remain visible
     // in the plan instead of disappearing as an ambiguous empty result.
     for name in exact_names {
-        if !probes.iter().any(|probe| probe.function == *name) {
+        if !probes
+            .iter()
+            .any(|probe| probe.function == *name && probe.skb_argument.is_some())
+        {
             probes.push(ProbeSpec {
                 function: name.clone(),
                 module: None,
@@ -145,12 +194,29 @@ pub fn build_probe_plan(
             });
         }
     }
+    for name in non_skb_names {
+        if !probes
+            .iter()
+            .any(|probe| probe.function == *name && probe.skb_argument.is_none())
+        {
+            probes.push(ProbeSpec {
+                function: name.clone(),
+                module: None,
+                source: ProbeSource::CallerAsserted,
+                available: false,
+                skb_argument: None,
+                assumption: "not present as a function in selected kernel/module BTF".into(),
+            });
+        }
+    }
     probes.sort_by(|a, b| {
         a.function
             .cmp(&b.function)
             .then_with(|| a.module.cmp(&b.module))
     });
-    probes.dedup_by(|a, b| a.function == b.function && a.module == b.module);
+    probes.dedup_by(|a, b| {
+        a.function == b.function && a.module == b.module && a.skb_argument == b.skb_argument
+    });
 
     let attachable = probes.iter().filter(|probe| probe.available).count();
     let unavailable = probes.len() - attachable;
@@ -182,7 +248,9 @@ fn discover_btf(
     btf: &Btf,
     module: Option<&str>,
     selected: &impl Fn(&str) -> bool,
+    non_skb: &BTreeSet<&str>,
     discovered: &mut Vec<(String, Option<String>, u8)>,
+    discovered_non_skb: &mut Vec<(String, Option<String>)>,
     inspection_failures: &mut u64,
 ) -> Result<(), PlanError> {
     let types = if module.is_some() {
@@ -222,13 +290,16 @@ fn discover_btf(
             *inspection_failures += 1;
             continue;
         };
-        if !selected(&name) {
+        let selected_skb = selected(&name);
+        let selected_non_skb = non_skb.contains(name.as_str());
+        if !selected_skb && !selected_non_skb {
             continue;
         }
         let Ok(Type::FuncProto(prototype)) = btf.resolve_chained_type(&function) else {
             *inspection_failures += 1;
             continue;
         };
+        let mut skb_argument = None;
         for (index, parameter) in prototype
             .parameters
             .iter()
@@ -237,12 +308,20 @@ fn discover_btf(
         {
             match is_skb_pointer(btf, parameter) {
                 Ok(true) => {
-                    discovered.push((name.clone(), module.map(str::to_owned), (index + 1) as u8));
+                    skb_argument = Some((index + 1) as u8);
                     break;
                 }
                 Ok(false) => {}
                 Err(()) => *inspection_failures += 1,
             }
+        }
+        if selected_skb {
+            if let Some(argument) = skb_argument {
+                discovered.push((name.clone(), module.map(str::to_owned), argument));
+            }
+        }
+        if selected_non_skb && skb_argument.is_none() {
+            discovered_non_skb.push((name, module.map(str::to_owned)));
         }
     }
     Ok(())
@@ -369,6 +448,27 @@ mod tests {
         assert_eq!(plan.probes.len(), 1);
         assert!(!plan.probes[0].available);
         assert_eq!(plan.probes[0].skb_argument, None);
+    }
+
+    #[test]
+    fn validates_non_skb_functions_without_inventing_an_argument() {
+        let plan = build_probe_plan_with_non_skb(
+            &["ip_rcv".into()],
+            None,
+            &["fib_table_lookup".into()],
+            None,
+            &[],
+            false,
+        )
+        .unwrap();
+        let probe = plan
+            .probes
+            .iter()
+            .find(|probe| probe.function == "fib_table_lookup")
+            .unwrap();
+        assert!(probe.available);
+        assert_eq!(probe.skb_argument, None);
+        assert_eq!(probe.source, ProbeSource::KernelBtf);
     }
 
     #[test]
