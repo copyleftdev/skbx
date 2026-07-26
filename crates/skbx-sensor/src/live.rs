@@ -53,8 +53,11 @@ pub struct SensorConfig {
     pub filter_netns: u32,
     pub output_stack: u32,
     pub track_skb: u32,
+    pub output_tunnel: u32,
     pub pcap_l2: CbpfProgram,
     pub pcap_l3: CbpfProgram,
+    pub tunnel_pcap_l2: CbpfProgram,
+    pub tunnel_pcap_l3: CbpfProgram,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

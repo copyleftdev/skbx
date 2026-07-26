@@ -34,6 +34,28 @@ pub fn compile(expression: Option<&str>) -> Result<(CbpfProgram, CbpfProgram)> {
     ))
 }
 
+pub fn compile_l2(expression: Option<&str>) -> Result<CbpfProgram> {
+    compile_optional(expression, Linktype::ETHERNET, "Ethernet")
+}
+
+pub fn compile_l3(expression: Option<&str>) -> Result<CbpfProgram> {
+    // Linux libpcap uses DLT_RAW=12. Linktype::RAW is the portable savefile
+    // LINKTYPE_RAW value (101), which pcap_open_dead rejects on Linux.
+    compile_optional(expression, Linktype(12), "raw-IP")
+}
+
+fn compile_optional(
+    expression: Option<&str>,
+    linktype: Linktype,
+    label: &str,
+) -> Result<CbpfProgram> {
+    let Some(expression) = expression.filter(|expression| !expression.is_empty()) else {
+        return Ok(CbpfProgram::default());
+    };
+    compile_for_linktype(expression, linktype)
+        .with_context(|| format!("compile {label} pcap filter"))
+}
+
 fn compile_for_linktype(expression: &str, linktype: Linktype) -> Result<CbpfProgram> {
     let capture = Capture::dead(linktype).context("create dead libpcap capture")?;
     let native = capture
@@ -162,5 +184,13 @@ mod tests {
         let (l2, l3) = compile(None).unwrap();
         assert_eq!(l2.len, 0);
         assert_eq!(l3.len, 0);
+    }
+
+    #[test]
+    fn compiles_independent_tunnel_link_layers() {
+        assert!(compile_l2(Some("ether proto 0x0800")).unwrap().len > 0);
+        assert!(compile_l3(Some("icmp6 or tcp port 443")).unwrap().len > 0);
+        assert_eq!(compile_l2(None).unwrap().len, 0);
+        assert_eq!(compile_l3(None).unwrap().len, 0);
     }
 }

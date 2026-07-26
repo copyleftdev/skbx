@@ -10,6 +10,22 @@ pub const READ_NETNS_FAILED: u16 = 1 << 6;
 pub const READ_TUPLE_FAILED: u16 = 1 << 7;
 pub const READ_CB_FAILED: u16 = 1 << 8;
 pub const READ_CALLER_FAILED: u16 = 1 << 9;
+pub const READ_TUNNEL_TUPLE_FAILED: u16 = 1 << 10;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RawPacketTuple {
+    pub saddr: [u8; 16],
+    pub daddr: [u8; 16],
+    pub sport: u16,
+    pub dport: u16,
+    pub l3_protocol: u16,
+    pub l4_protocol: u8,
+    pub tcp_flags: u8,
+    pub icmp_type: u8,
+    pub icmp_code: u8,
+    pub _pad: u16,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -27,13 +43,8 @@ pub struct RawTraceEvent {
     pub mtu: u32,
     pub protocol: u16,
     pub read_status: u16,
-    pub saddr: [u8; 16],
-    pub daddr: [u8; 16],
-    pub sport: u16,
-    pub dport: u16,
-    pub l3_protocol: u16,
-    pub l4_protocol: u8,
-    pub tcp_flags: u8,
+    pub tuple: RawPacketTuple,
+    pub tunnel_tuple: RawPacketTuple,
     pub control_buffer: [u32; 5],
     pub command: [u8; 16],
     pub _pad0: u32,
@@ -83,6 +94,7 @@ impl RawTraceEvent {
             (READ_TUPLE_FAILED, "tuple"),
             (READ_CB_FAILED, "control_buffer"),
             (READ_CALLER_FAILED, "caller"),
+            (READ_TUNNEL_TUPLE_FAILED, "tunnel_tuple"),
         ]
         .into_iter()
         .filter_map(|(mask, name)| (self.read_status & mask != 0).then_some(name))
@@ -116,22 +128,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn raw_event_has_fixed_168_byte_contract() {
-        assert_eq!(RawTraceEvent::BYTE_LEN, 168);
+    fn raw_event_has_fixed_216_byte_contract() {
+        assert_eq!(std::mem::size_of::<RawPacketTuple>(), 44);
+        assert_eq!(RawTraceEvent::BYTE_LEN, 216);
     }
 
     #[test]
     fn rejects_wrong_record_size() {
-        assert!(RawTraceEvent::from_bytes(&[0; 167]).is_none());
-        assert!(RawTraceEvent::from_bytes(&[0; 168]).is_some());
+        assert!(RawTraceEvent::from_bytes(&[0; 215]).is_none());
+        assert!(RawTraceEvent::from_bytes(&[0; 216]).is_some());
     }
 
     #[test]
     fn read_failure_names_are_stable_and_ordered() {
         let event = RawTraceEvent {
-            read_status: READ_TUPLE_FAILED | READ_CALLER_FAILED,
+            read_status: READ_TUPLE_FAILED | READ_CALLER_FAILED | READ_TUNNEL_TUPLE_FAILED,
             ..RawTraceEvent::default()
         };
-        assert_eq!(event.read_failures(), vec!["tuple", "caller"]);
+        assert_eq!(
+            event.read_failures(),
+            vec!["tuple", "caller", "tunnel_tuple"]
+        );
     }
 }

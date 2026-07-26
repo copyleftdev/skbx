@@ -138,7 +138,14 @@ impl Describe {
                     status: supported.clone(),
                     requires: "packet header access",
                     cost: "bounded_kernel_reads",
-                    description: "decode IPv4/IPv6, TCP/UDP tuples and TCP flags",
+                    description: "decode IPv4/IPv6 extension chains, TCP/UDP/ICMP tuples and TCP flags",
+                },
+                Capability {
+                    name: "tunnel-packet-observation",
+                    status: supported.clone(),
+                    requires: "SKB inner header offsets",
+                    cost: "optional bounded inner-header reads and cBPF predicates",
+                    description: "apply independent inner L2/L3 pcap predicates and emit an inner packet tuple",
                 },
                 Capability {
                     name: "kernel-stack-and-caller",
@@ -176,11 +183,11 @@ impl Describe {
                     description: "create an empty synchronization file only after every requested probe is attached",
                 },
                 Capability {
-                    name: "tunnel-and-tc-xdp-observation",
+                    name: "tc-xdp-observation",
                     status: planned,
-                    requires: "bounded inner-header parsing and dynamic BPF program links",
+                    requires: "dynamic BPF program links",
                     cost: "bounded_kernel_reads",
-                    description: "correlate tunnel, TC and XDP paths without inventing missing evidence",
+                    description: "correlate TC and XDP paths without inventing missing evidence",
                 },
                 Capability {
                     name: "route-consensus-and-outliers",
@@ -284,6 +291,10 @@ pub struct PacketTuple {
     pub l3_protocol: u16,
     pub l4_protocol: u8,
     pub tcp_flags: u8,
+    #[serde(default)]
+    pub icmp_type: Option<u8>,
+    #[serde(default)]
+    pub icmp_code: Option<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -317,6 +328,8 @@ pub struct TraceEvent {
     pub packet: PacketMeta,
     #[serde(default)]
     pub tuple: Option<PacketTuple>,
+    #[serde(default)]
+    pub tunnel_tuple: Option<PacketTuple>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -348,6 +361,8 @@ pub struct CaptureStart {
     #[serde(default)]
     pub timestamp_mode: String,
     #[serde(default)]
+    pub output_tunnel: bool,
+    #[serde(default)]
     pub filters: CaptureFilters,
     pub limits: CaptureLimits,
 }
@@ -360,6 +375,10 @@ pub struct CaptureFilters {
     pub netns: u32,
     pub track_skb: bool,
     pub pcap: Option<String>,
+    #[serde(default)]
+    pub tunnel_pcap_l2: Option<String>,
+    #[serde(default)]
+    pub tunnel_pcap_l3: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -488,6 +507,7 @@ pub fn json_schema() -> serde_json::Value {
                     "probes": {"type": "array", "items": {"type": "string"}},
                     "attachment_backend": {"enum": ["kprobe", "kprobe-multi"]},
                     "timestamp_mode": {"enum": ["none", "current", "relative", "absolute"]},
+                    "output_tunnel": {"type": "boolean"},
                     "filters": {"$ref": "#/$defs/CaptureFilters"},
                     "limits": {"$ref": "#/$defs/CaptureLimits"}
                 },
@@ -538,6 +558,12 @@ pub fn json_schema() -> serde_json::Value {
                             {"$ref": "#/$defs/PacketTuple"},
                             {"type": "null"}
                         ]
+                    },
+                    "tunnel_tuple": {
+                        "oneOf": [
+                            {"$ref": "#/$defs/PacketTuple"},
+                            {"type": "null"}
+                        ]
                     }
                 },
                 "additionalProperties": false
@@ -575,7 +601,9 @@ pub fn json_schema() -> serde_json::Value {
                     "ifindex": {"type": "integer", "minimum": 0, "maximum": 4294967295_u64},
                     "netns": {"type": "integer", "minimum": 0, "maximum": 4294967295_u64},
                     "track_skb": {"type": "boolean"},
-                    "pcap": {"type": ["string", "null"]}
+                    "pcap": {"type": ["string", "null"]},
+                    "tunnel_pcap_l2": {"type": ["string", "null"]},
+                    "tunnel_pcap_l3": {"type": ["string", "null"]}
                 },
                 "additionalProperties": false
             },
@@ -633,7 +661,9 @@ pub fn json_schema() -> serde_json::Value {
                     "destination_port": {"type": "integer", "minimum": 0, "maximum": 65535},
                     "l3_protocol": {"type": "integer", "minimum": 0, "maximum": 65535},
                     "l4_protocol": {"type": "integer", "minimum": 0, "maximum": 255},
-                    "tcp_flags": {"type": "integer", "minimum": 0, "maximum": 255}
+                    "tcp_flags": {"type": "integer", "minimum": 0, "maximum": 255},
+                    "icmp_type": {"type": ["integer", "null"], "minimum": 0, "maximum": 255},
+                    "icmp_code": {"type": ["integer", "null"], "minimum": 0, "maximum": 255}
                 },
                 "additionalProperties": false
             },
@@ -674,9 +704,11 @@ mod tests {
         assert!(describe.capabilities.iter().any(|c| {
             c.name == "route-consensus-and-outliers" && c.status == CapabilityStatus::Supported
         }));
-        assert!(describe.capabilities.iter().any(|c| {
-            c.name == "tunnel-and-tc-xdp-observation" && c.status == CapabilityStatus::Planned
-        }));
+        assert!(
+            describe.capabilities.iter().any(|c| {
+                c.name == "tc-xdp-observation" && c.status == CapabilityStatus::Planned
+            })
+        );
         assert_eq!(describe.defaults.max_events, 100_000);
     }
 

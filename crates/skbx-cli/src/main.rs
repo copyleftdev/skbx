@@ -43,6 +43,9 @@ struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
+// Parsed exactly once at process startup. Indirection would complicate clap's
+// declarative surface without reducing capture-path memory or work.
+#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Emit the machine-readable tool contract.
     Describe {
@@ -106,9 +109,18 @@ enum Command {
         /// Keep following matching SKBs and their clone/copy descendants.
         #[arg(long)]
         filter_track_skb: bool,
+        /// Apply a libpcap expression to the inner Ethernet frame when present.
+        #[arg(long)]
+        filter_tunnel_pcap_l2: Option<String>,
+        /// Apply a libpcap expression to the inner IP packet when present.
+        #[arg(long)]
+        filter_tunnel_pcap_l3: Option<String>,
         /// Capture up to 50 kernel stack frames per event.
         #[arg(long)]
         output_stack: bool,
+        /// Decode the inner IP tuple from SKBs carrying tunnel header offsets.
+        #[arg(long)]
+        output_tunnel: bool,
         /// Probe attachment backend; auto falls back to individual kprobes.
         #[arg(long, value_enum, default_value_t = AttachmentBackend::Auto)]
         backend: AttachmentBackend,
@@ -286,7 +298,10 @@ fn run(cli: Cli) -> Result<u8> {
             filter_ifname,
             filter_netns,
             filter_track_skb,
+            filter_tunnel_pcap_l2,
+            filter_tunnel_pcap_l3,
             output_stack,
+            output_tunnel,
             backend,
             timestamp,
             duration,
@@ -308,7 +323,10 @@ fn run(cli: Cli) -> Result<u8> {
             filter_ifname.as_deref(),
             filter_netns.as_deref(),
             filter_track_skb,
+            filter_tunnel_pcap_l2.as_deref(),
+            filter_tunnel_pcap_l3.as_deref(),
             output_stack,
+            output_tunnel,
             backend,
             timestamp,
             duration,
@@ -391,7 +409,10 @@ fn capture(
     filter_ifname: Option<&str>,
     filter_netns: Option<&str>,
     filter_track_skb: bool,
+    filter_tunnel_pcap_l2: Option<&str>,
+    filter_tunnel_pcap_l3: Option<&str>,
     output_stack: bool,
+    output_tunnel: bool,
     backend: AttachmentBackend,
     timestamp: TimestampOutput,
     duration_seconds: u64,
@@ -417,12 +438,16 @@ fn capture(
     }
     let mut filters = resolve_filters(filter_mark, filter_ifindex, filter_ifname, filter_netns)?;
     filters.pcap = (!pcap_filter.is_empty()).then(|| pcap_filter.join(" "));
+    filters.tunnel_pcap_l2 = filter_tunnel_pcap_l2.map(str::to_owned);
+    filters.tunnel_pcap_l3 = filter_tunnel_pcap_l3.map(str::to_owned);
     filters.track_skb = filter_track_skb;
     if filter_track_skb
         && filters.mark_mask == 0
         && filters.ifindex == 0
         && filters.netns == 0
         && filters.pcap.is_none()
+        && filters.tunnel_pcap_l2.is_none()
+        && filters.tunnel_pcap_l3.is_none()
     {
         bail!("--filter-track-skb requires at least one packet filter");
     }
@@ -485,6 +510,7 @@ fn capture(
             probes: probes.clone(),
             attachment_backend: String::new(),
             timestamp_mode: timestamp.label().into(),
+            output_tunnel,
             filters: filters.clone(),
             limits: CaptureLimits {
                 duration_seconds,
@@ -497,6 +523,8 @@ fn capture(
         // cannot load BPF, callers get an error rather than a misleading
         // header-only trace.
         let (pcap_l2, pcap_l3) = pcap_filter::compile(filters.pcap.as_deref())?;
+        let tunnel_pcap_l2 = pcap_filter::compile_l2(filters.tunnel_pcap_l2.as_deref())?;
+        let tunnel_pcap_l3 = pcap_filter::compile_l3(filters.tunnel_pcap_l3.as_deref())?;
         let sensor_config = skbx_sensor::SensorConfig {
             filter_mark: filters.mark,
             filter_mark_mask: filters.mark_mask,
@@ -504,8 +532,11 @@ fn capture(
             filter_netns: filters.netns,
             output_stack: u32::from(output_stack),
             track_skb: u32::from(filter_track_skb),
+            output_tunnel: u32::from(output_tunnel),
             pcap_l2,
             pcap_l3,
+            tunnel_pcap_l2,
+            tunnel_pcap_l3,
         };
         let mut sensor = skbx_sensor::LiveSensor::attach(
             &attachments,
@@ -711,6 +742,8 @@ fn resolve_filters(
         netns,
         track_skb: false,
         pcap: None,
+        tunnel_pcap_l2: None,
+        tunnel_pcap_l3: None,
     })
 }
 
@@ -814,7 +847,8 @@ fn convert_event(
             read_status: raw.read_status,
             read_errors: raw.read_failures().into_iter().map(str::to_owned).collect(),
         },
-        tuple: packet_tuple(&raw),
+        tuple: packet_tuple(&raw.tuple),
+        tunnel_tuple: packet_tuple(&raw.tunnel_tuple),
     }
 }
 
@@ -826,7 +860,7 @@ fn drop_reason_parameter(function: &str, raw: &skbx_sensor::RawTraceEvent) -> Op
     }
 }
 
-fn packet_tuple(raw: &skbx_sensor::RawTraceEvent) -> Option<PacketTuple> {
+fn packet_tuple(raw: &skbx_sensor::RawPacketTuple) -> Option<PacketTuple> {
     let (source, destination) = match raw.l3_protocol {
         0x0800 => (
             Ipv4Addr::new(raw.saddr[0], raw.saddr[1], raw.saddr[2], raw.saddr[3]).to_string(),
@@ -846,6 +880,8 @@ fn packet_tuple(raw: &skbx_sensor::RawTraceEvent) -> Option<PacketTuple> {
         l3_protocol: raw.l3_protocol,
         l4_protocol: raw.l4_protocol,
         tcp_flags: raw.tcp_flags,
+        icmp_type: matches!(raw.l4_protocol, 1 | 58).then_some(raw.icmp_type),
+        icmp_code: matches!(raw.l4_protocol, 1 | 58).then_some(raw.icmp_code),
     })
 }
 
@@ -970,13 +1006,24 @@ mod tests {
             len: 64,
             protocol: 8,
             caller_ip: 0x1005,
-            l3_protocol: 0x0800,
-            l4_protocol: 6,
-            saddr: [127, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            daddr: [127, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            sport: 1234_u16.to_be(),
-            dport: 443_u16.to_be(),
-            tcp_flags: 0x12,
+            tuple: skbx_sensor::RawPacketTuple {
+                l3_protocol: 0x0800,
+                l4_protocol: 6,
+                saddr: [127, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                daddr: [127, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                sport: 1234_u16.to_be(),
+                dport: 443_u16.to_be(),
+                tcp_flags: 0x12,
+                ..Default::default()
+            },
+            tunnel_tuple: skbx_sensor::RawPacketTuple {
+                l3_protocol: 0x0800,
+                l4_protocol: 1,
+                saddr: [10, 42, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                daddr: [10, 42, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                icmp_type: 8,
+                ..Default::default()
+            },
             command: {
                 let mut command = [0; 16];
                 command[..4].copy_from_slice(b"curl");
@@ -997,6 +1044,12 @@ mod tests {
         assert_eq!(tuple.source, "127.0.0.1");
         assert_eq!(tuple.destination_port, 443);
         assert_eq!(tuple.tcp_flags, 0x12);
+        assert_eq!(tuple.icmp_type, None);
+        let tunnel_tuple = a.tunnel_tuple.unwrap();
+        assert_eq!(tunnel_tuple.source, "10.42.0.1");
+        assert_eq!(tunnel_tuple.destination, "10.42.0.2");
+        assert_eq!(tunnel_tuple.icmp_type, Some(8));
+        assert_eq!(tunnel_tuple.icmp_code, Some(0));
     }
 
     #[test]

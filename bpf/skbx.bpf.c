@@ -37,11 +37,21 @@
 #define READ_TUPLE_FAILED    (1u << 7)
 #define READ_CB_FAILED       (1u << 8)
 #define READ_CALLER_FAILED   (1u << 9)
+#define READ_TUNNEL_TUPLE_FAILED (1u << 10)
 
 #define ETH_P_IP   0x0800
 #define ETH_P_IPV6 0x86dd
+#define IPPROTO_ICMP 1
 #define IPPROTO_TCP 6
 #define IPPROTO_UDP 17
+#define IPPROTO_IPV6_HOPOPTS 0
+#define IPPROTO_IPV6_ROUTING 43
+#define IPPROTO_IPV6_FRAGMENT 44
+#define IPPROTO_AH 51
+#define IPPROTO_NONE 59
+#define IPPROTO_IPV6_DSTOPTS 60
+#define IPPROTO_ICMPV6 58
+#define MAX_IPV6_EXTENSION_HEADERS 8
 #define MAX_CBPF_INSNS 128
 #define CBPF_MEMWORDS 16
 
@@ -105,6 +115,19 @@ struct cbpf_program {
     struct cbpf_insn instructions[MAX_CBPF_INSNS];
 };
 
+struct skbx_packet_tuple {
+    __u8 saddr[16];
+    __u8 daddr[16];
+    __u16 sport;
+    __u16 dport;
+    __u16 l3_protocol;
+    __u8 l4_protocol;
+    __u8 tcp_flags;
+    __u8 icmp_type;
+    __u8 icmp_code;
+    __u16 _pad;
+};
+
 struct skbx_trace_event {
     __u64 timestamp_ns;
     __u64 skb_addr;
@@ -119,13 +142,8 @@ struct skbx_trace_event {
     __u32 mtu;
     __u16 protocol;
     __u16 read_status;
-    __u8 saddr[16];
-    __u8 daddr[16];
-    __u16 sport;
-    __u16 dport;
-    __u16 l3_protocol;
-    __u8 l4_protocol;
-    __u8 tcp_flags;
+    struct skbx_packet_tuple tuple;
+    struct skbx_packet_tuple tunnel_tuple;
     __u32 control_buffer[5];
     char command[16];
     __u32 _pad0;
@@ -147,8 +165,11 @@ struct skbx_config {
     __u32 filter_netns;
     __u32 output_stack;
     __u32 track_skb;
+    __u32 output_tunnel;
     struct cbpf_program pcap_l2;
     struct cbpf_program pcap_l3;
+    struct cbpf_program tunnel_pcap_l2;
+    struct cbpf_program tunnel_pcap_l3;
 };
 
 const volatile struct skbx_config CONFIG = {};
@@ -192,60 +213,152 @@ static __always_inline struct kernel_stats *stats(void)
     return bpf_map_lookup_elem(&telemetry, &key);
 }
 
-static __always_inline int read_tuple(struct sk_buff *skb,
-                                      struct skbx_trace_event *event)
+static __always_inline int packet_read(const unsigned char *head, __u32 tail,
+                                       __u32 offset, void *destination,
+                                       __u32 size)
 {
-    unsigned char *head = 0;
-    __u16 network_header = 0;
+    if (offset > tail || size > tail - offset)
+        return -1;
+    return bpf_probe_read_kernel(destination, size, head + offset);
+}
+
+static __always_inline int read_tuple_at(const unsigned char *head, __u32 tail,
+                                         __u32 network_header,
+                                         struct skbx_packet_tuple *tuple)
+{
     __u8 version_ihl = 0;
-    void *l3;
-    void *l4;
     __u32 l4_offset;
 
-    if (bpf_core_read(&head, sizeof(head), &skb->head) || !head)
-        return -1;
-    if (bpf_core_read(&network_header, sizeof(network_header),
-                      &skb->network_header))
-        return -1;
-    l3 = head + network_header;
-    if (bpf_probe_read_kernel(&version_ihl, sizeof(version_ihl), l3))
+    if (packet_read(head, tail, network_header, &version_ihl,
+                    sizeof(version_ihl)))
         return -1;
 
     if ((version_ihl >> 4) == 4) {
         __u8 ihl = (version_ihl & 0x0f) * 4;
+        __u8 fragment[2] = {};
+
         if (ihl < 20)
             return -1;
-        event->l3_protocol = ETH_P_IP;
-        if (bpf_probe_read_kernel(&event->l4_protocol,
-                                  sizeof(event->l4_protocol), l3 + 9) ||
-            bpf_probe_read_kernel(event->saddr, 4, l3 + 12) ||
-            bpf_probe_read_kernel(event->daddr, 4, l3 + 16))
+        tuple->l3_protocol = ETH_P_IP;
+        if (packet_read(head, tail, network_header + 9,
+                        &tuple->l4_protocol, sizeof(tuple->l4_protocol)) ||
+            packet_read(head, tail, network_header + 12, tuple->saddr, 4) ||
+            packet_read(head, tail, network_header + 16, tuple->daddr, 4) ||
+            packet_read(head, tail, network_header + 6, fragment,
+                        sizeof(fragment)))
             return -1;
         l4_offset = network_header + ihl;
+        /* Non-initial IPv4 fragments do not contain a transport header. */
+        if ((((__u16)fragment[0] << 8) | fragment[1]) & 0x1fff)
+            return 0;
     } else if ((version_ihl >> 4) == 6) {
-        event->l3_protocol = ETH_P_IPV6;
-        if (bpf_probe_read_kernel(&event->l4_protocol,
-                                  sizeof(event->l4_protocol), l3 + 6) ||
-            bpf_probe_read_kernel(event->saddr, 16, l3 + 8) ||
-            bpf_probe_read_kernel(event->daddr, 16, l3 + 24))
+        __u8 next_header = 0;
+
+        tuple->l3_protocol = ETH_P_IPV6;
+        if (packet_read(head, tail, network_header + 6, &next_header,
+                        sizeof(next_header)) ||
+            packet_read(head, tail, network_header + 8, tuple->saddr, 16) ||
+            packet_read(head, tail, network_header + 24, tuple->daddr, 16))
             return -1;
         l4_offset = network_header + 40;
+
+#pragma clang loop unroll(full)
+        for (int index = 0; index < MAX_IPV6_EXTENSION_HEADERS; index++) {
+            __u8 extension[4] = {};
+            __u32 extension_len;
+
+            if (next_header != IPPROTO_IPV6_HOPOPTS &&
+                next_header != IPPROTO_IPV6_ROUTING &&
+                next_header != IPPROTO_IPV6_DSTOPTS &&
+                next_header != IPPROTO_IPV6_FRAGMENT &&
+                next_header != IPPROTO_AH)
+                break;
+            if (packet_read(head, tail, l4_offset, extension,
+                            sizeof(extension)))
+                return -1;
+
+            if (next_header == IPPROTO_IPV6_FRAGMENT) {
+                extension_len = 8;
+                next_header = extension[0];
+                /* Do not interpret payload from non-initial fragments. */
+                if ((((__u16)extension[2] << 8) | extension[3]) & 0xfff8) {
+                    tuple->l4_protocol = next_header;
+                    return 0;
+                }
+            } else if (next_header == IPPROTO_AH) {
+                extension_len = ((__u32)extension[1] + 2) * 4;
+                next_header = extension[0];
+            } else {
+                extension_len = ((__u32)extension[1] + 1) * 8;
+                next_header = extension[0];
+            }
+            if (l4_offset > tail || extension_len > tail - l4_offset)
+                return -1;
+            l4_offset += extension_len;
+        }
+        /* Reject rather than mislabel chains beyond the declared bound. */
+        if (next_header == IPPROTO_IPV6_HOPOPTS ||
+            next_header == IPPROTO_IPV6_ROUTING ||
+            next_header == IPPROTO_IPV6_DSTOPTS ||
+            next_header == IPPROTO_IPV6_FRAGMENT ||
+            next_header == IPPROTO_AH)
+            return -1;
+        tuple->l4_protocol = next_header;
+        if (next_header == IPPROTO_NONE)
+            return 0;
     } else {
         return 0;
     }
 
-    if (event->l4_protocol != IPPROTO_TCP &&
-        event->l4_protocol != IPPROTO_UDP)
+    if (tuple->l4_protocol == IPPROTO_TCP ||
+        tuple->l4_protocol == IPPROTO_UDP) {
+        if (packet_read(head, tail, l4_offset, &tuple->sport,
+                        sizeof(tuple->sport)) ||
+            packet_read(head, tail, l4_offset + 2, &tuple->dport,
+                        sizeof(tuple->dport)))
+            return -1;
+        if (tuple->l4_protocol == IPPROTO_TCP &&
+            packet_read(head, tail, l4_offset + 13, &tuple->tcp_flags,
+                        sizeof(tuple->tcp_flags)))
+            return -1;
         return 0;
+    }
 
-    l4 = head + l4_offset;
-    if (bpf_probe_read_kernel(&event->sport, sizeof(event->sport), l4) ||
-        bpf_probe_read_kernel(&event->dport, sizeof(event->dport), l4 + 2))
+    if (tuple->l4_protocol == IPPROTO_ICMP ||
+        tuple->l4_protocol == IPPROTO_ICMPV6) {
+        if (packet_read(head, tail, l4_offset, &tuple->icmp_type,
+                        sizeof(tuple->icmp_type)) ||
+            packet_read(head, tail, l4_offset + 1, &tuple->icmp_code,
+                        sizeof(tuple->icmp_code)))
+            return -1;
+    }
+    return 0;
+}
+
+static __always_inline int read_tuples(struct sk_buff *skb,
+                                       struct skbx_trace_event *event)
+{
+    unsigned char *head = 0;
+    __u32 tail = 0;
+    __u16 network_header = 0;
+    __u16 inner_network_header = 0;
+
+    if (bpf_core_read(&head, sizeof(head), &skb->head) || !head ||
+        bpf_core_read(&tail, sizeof(tail), &skb->tail) ||
+        bpf_core_read(&network_header, sizeof(network_header),
+                      &skb->network_header))
         return -1;
-    if (event->l4_protocol == IPPROTO_TCP &&
-        bpf_probe_read_kernel(&event->tcp_flags,
-                              sizeof(event->tcp_flags), l4 + 13))
+    if (read_tuple_at(head, tail, network_header, &event->tuple))
         return -1;
+    if (!CONFIG.output_tunnel)
+        return 0;
+    if (bpf_core_read(&inner_network_header, sizeof(inner_network_header),
+                      &skb->inner_network_header))
+        return -2;
+    if (inner_network_header &&
+        read_tuple_at(head, tail, inner_network_header,
+                      &event->tunnel_tuple))
+        return -2;
     return 0;
 }
 
@@ -443,6 +556,41 @@ static __always_inline int pcap_filter_match(struct sk_buff *skb)
     return run_cbpf(program, head + offset, tail - offset);
 }
 
+static __always_inline int tunnel_pcap_filter_match(struct sk_buff *skb)
+{
+    unsigned char *head = 0;
+    __u32 tail = 0;
+    __u16 inner_mac_header = 0;
+    __u16 inner_network_header = 0;
+
+    if (!CONFIG.tunnel_pcap_l2.len && !CONFIG.tunnel_pcap_l3.len)
+        return 1;
+    if (!skb ||
+        bpf_core_read(&head, sizeof(head), &skb->head) || !head ||
+        bpf_core_read(&tail, sizeof(tail), &skb->tail) ||
+        bpf_core_read(&inner_network_header, sizeof(inner_network_header),
+                      &skb->inner_network_header))
+        return 0;
+    /* Match pwru: tunnel predicates do not reject non-encapsulated SKBs. */
+    if (!inner_network_header)
+        return 1;
+
+    if (CONFIG.tunnel_pcap_l2.len) {
+        if (bpf_core_read(&inner_mac_header, sizeof(inner_mac_header),
+                          &skb->inner_mac_header) ||
+            inner_mac_header > tail ||
+            !run_cbpf(&CONFIG.tunnel_pcap_l2, head + inner_mac_header,
+                      tail - inner_mac_header))
+            return 0;
+    }
+    if (CONFIG.tunnel_pcap_l3.len &&
+        (inner_network_header > tail ||
+         !run_cbpf(&CONFIG.tunnel_pcap_l3, head + inner_network_header,
+                   tail - inner_network_header)))
+        return 0;
+    return 1;
+}
+
 static __always_inline int configured_filter_match(struct sk_buff *skb)
 {
     __u32 mark = 0;
@@ -453,11 +601,14 @@ static __always_inline int configured_filter_match(struct sk_buff *skb)
 
     if (!CONFIG.filter_mark_mask && !CONFIG.filter_ifindex &&
         !CONFIG.filter_netns && !CONFIG.pcap_l2.len &&
-        !CONFIG.pcap_l3.len)
+        !CONFIG.pcap_l3.len && !CONFIG.tunnel_pcap_l2.len &&
+        !CONFIG.tunnel_pcap_l3.len)
         return 1;
     if (!skb)
         goto filtered;
     if (!pcap_filter_match(skb))
+        goto filtered;
+    if (!tunnel_pcap_filter_match(skb))
         goto filtered;
 
     if (CONFIG.filter_mark_mask) {
@@ -580,8 +731,11 @@ static __always_inline int trace_skb(struct pt_regs *ctx, struct sk_buff *skb)
         if (bpf_core_read(event->control_buffer,
                           sizeof(event->control_buffer), &skb->cb))
             event->read_status |= READ_CB_FAILED;
-        if (read_tuple(skb, event))
+        int tuple_status = read_tuples(skb, event);
+        if (tuple_status == -1)
             event->read_status |= READ_TUPLE_FAILED;
+        else if (tuple_status == -2)
+            event->read_status |= READ_TUNNEL_TUPLE_FAILED;
     }
 
     if (event->read_status && counters)

@@ -1,4 +1,4 @@
-.PHONY: check build benchmark
+.PHONY: check build benchmark live-tunnel
 
 check:
 	cargo fmt --all -- --check
@@ -10,3 +10,7 @@ build:
 
 benchmark:
 	cargo test --release --locked --offline -p skbx-core replay_100k_events -- --ignored --nocapture
+
+live-tunnel:
+	cargo build --locked --offline
+	sudo ./scripts/live-tunnel-test.sh target/debug/skbx

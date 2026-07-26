@@ -451,6 +451,7 @@ mod tests {
             probes: vec!["ip_rcv".into()],
             attachment_backend: "kprobe".into(),
             timestamp_mode: "none".into(),
+            output_tunnel: false,
             filters: Default::default(),
             limits: CaptureLimits {
                 duration_seconds: 1,
@@ -486,6 +487,7 @@ mod tests {
                 ..PacketMeta::default()
             },
             tuple: None,
+            tunnel_tuple: None,
         });
         let mut lines = vec![
             serde_json::to_string(&start).unwrap(),
@@ -568,6 +570,7 @@ mod tests {
             probes: vec!["ip_rcv".into()],
             attachment_backend: "kprobe".into(),
             timestamp_mode: "none".into(),
+            output_tunnel: false,
             filters: Default::default(),
             limits: CaptureLimits {
                 duration_seconds: 1,
@@ -607,6 +610,7 @@ mod tests {
                     ..PacketMeta::default()
                 },
                 tuple: None,
+                tunnel_tuple: None,
             });
             serde_json::to_writer(&mut bytes, &event).unwrap();
             bytes.push(b'\n');

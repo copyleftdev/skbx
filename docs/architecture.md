@@ -85,10 +85,10 @@ filesystem reads.
 
 ### Phase 2 — pwru breadth
 
-- ICMP and IPv6 extension-header decoding;
-- tunnel filters and inner tuple decoding;
+- ICMP and bounded IPv6 extension-header decoding (complete);
+- tunnel filters and inner tuple decoding (complete);
 - full network namespace and process enrichment;
-- split-BTF kernel module discovery.
+- split-BTF kernel module discovery (complete).
 
 ### Phase 3 — agent-native analysis
 

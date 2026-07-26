@@ -16,7 +16,7 @@ coverage and a relevant live-kernel check exist.
 | Concurrent attach/detach batches | supported | Multi links attach/detach each signature group as one kernel operation |
 | Named kernel modules / all modules | supported | `--kmods` and `--all-kmods` parse base/split BTF with module-qualified plan and capture provenance |
 | pcap expression filter | partial | rust-pcap/libpcap compiler plus verifier-bounded in-kernel cBPF VM; currently capped at 128 instructions versus pwru's 4096 |
-| Tunnel L2/L3 pcap filters | missing | Requires bounded inner-header parser plus filter predicates |
+| Tunnel L2/L3 pcap filters | supported | Independent `--filter-tunnel-pcap-l2` and `--filter-tunnel-pcap-l3` validated cBPF predicates; both predicates are ANDed and non-tunnel SKBs retain pwru's pass-through semantics; isolated VXLAN live gate |
 | Network namespace filter | partial | Path/inode resolution and early BPF predicate supported; socket fallback and ifname lookup inside another netns remain |
 | Interface filter | partial | Numeric ifindex and current-netns ifname supported; cross-netns ifname lookup remains |
 | Mark/mask filter | supported | Decimal/hex `mark[/mask]`, immutable rodata configuration and early BPF predicate |
@@ -28,9 +28,9 @@ coverage and a relevant live-kernel check exist.
 | Trace TC programs | missing | Enumerate programs and attach fentry dynamically |
 | Trace XDP programs | missing | XDP metadata path and fentry/fexit correlation |
 | Base metadata | supported | PID, CPU, comm, length, mark, protocol, ifindex, netns and MTU are captured with per-field read telemetry |
-| IPv4/IPv6 L4 tuple | supported | Fixed-offset, verifier-bounded IPv4/IPv6 and TCP/UDP decoder |
+| IPv4/IPv6 L4 tuple | supported | Verifier-bounded IPv4 plus IPv6 decoder with at most eight extension headers; TCP/UDP ports, TCP flags, ICMPv4/ICMPv6 type/code and non-initial fragment handling |
 | TCP flags | supported | Captured from the TCP wire header |
-| Tunnel tuple | missing | Depends on inner-header decoder |
+| Tunnel tuple | supported | `--output-tunnel` decodes from the kernel-maintained `inner_network_header`; isolated VXLAN gate validates outer UDP and inner ICMP evidence with zero read/reserve failures |
 | Full `sk_buff` / shared-info dump | missing | Needs `bpf_snprintf_btf` buffers or a typed bounded field projection |
 | SKB control buffer | supported | Fixed 20-byte CO-RE read |
 | Custom SKB/XDP metadata expressions | missing | Needs constrained BTF-checked field projections |
