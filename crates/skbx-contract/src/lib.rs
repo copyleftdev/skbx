@@ -183,6 +183,13 @@ impl Describe {
                     description: "associate explicitly requested non-SKB functions with packet evidence while labeling the inference source",
                 },
                 Capability {
+                    name: "bpf-helper-tracing",
+                    status: supported.clone(),
+                    requires: "x86_64, readable /proc/kcore and BPF JIT symbols",
+                    cost: "bounded startup disassembly plus selected stack-associated probes",
+                    description: "decode exact direct callees from current JIT programs, validate them with BTF and retain same-SKB evidence",
+                },
+                Capability {
                     name: "skb-drop-reason",
                     status: supported.clone(),
                     requires: "kernel BTF enum and a supported drop function",

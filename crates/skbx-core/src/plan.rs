@@ -65,6 +65,29 @@ pub fn build_probe_plan_with_non_skb(
     modules: &[String],
     all_modules: bool,
 ) -> Result<ProbePlan, PlanError> {
+    build_probe_plan_with_bpf_helpers(
+        exact_names,
+        filter_pattern,
+        non_skb_names,
+        &[],
+        btf_path,
+        modules,
+        all_modules,
+    )
+}
+
+/// Build a plan that also includes exact functions reached as direct calls
+/// from JIT-compiled BPF programs. BTF decides whether each discovered helper
+/// is a direct SKB probe or needs stack association.
+pub fn build_probe_plan_with_bpf_helpers(
+    exact_names: &[String],
+    filter_pattern: Option<&str>,
+    non_skb_names: &[String],
+    bpf_helper_names: &[String],
+    btf_path: Option<&Path>,
+    modules: &[String],
+    all_modules: bool,
+) -> Result<ProbePlan, PlanError> {
     if !exact_names.is_empty() && filter_pattern.is_some() {
         return Err(PlanError::ConflictingSelectors);
     }
@@ -77,9 +100,16 @@ pub fn build_probe_plan_with_non_skb(
         .map(|pattern| Regex::new(&format!("^(?:{pattern})$")))
         .transpose()?;
     let exact: BTreeSet<&str> = exact_names.iter().map(String::as_str).collect();
-    let non_skb: BTreeSet<&str> = non_skb_names.iter().map(String::as_str).collect();
+    let helpers: BTreeSet<&str> = bpf_helper_names.iter().map(String::as_str).collect();
+    let non_skb: BTreeSet<&str> = non_skb_names
+        .iter()
+        .chain(bpf_helper_names)
+        .map(String::as_str)
+        .collect();
     let selected = |name: &str| {
-        if !exact.is_empty() {
+        if helpers.contains(name) {
+            true
+        } else if !exact.is_empty() {
             exact.contains(name)
         } else {
             anchored_pattern
@@ -206,6 +236,19 @@ pub fn build_probe_plan_with_non_skb(
                 available: false,
                 skb_argument: None,
                 assumption: "not present as a function in selected kernel/module BTF".into(),
+            });
+        }
+    }
+    for name in bpf_helper_names {
+        if !probes.iter().any(|probe| probe.function == *name) {
+            probes.push(ProbeSpec {
+                function: name.clone(),
+                module: None,
+                source: ProbeSource::CallerAsserted,
+                available: false,
+                skb_argument: None,
+                assumption: "BPF JIT direct callee is absent from selected kernel/module BTF"
+                    .into(),
             });
         }
     }

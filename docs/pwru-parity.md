@@ -24,7 +24,7 @@ coverage and a relevant live-kernel check exist.
 | Track SKB across transformations | partial | Bounded LRU identity map, clone/copy propagation and `kfree_skbmem` lifetime deletion supported; veth/XDP conversion remains |
 | Track logically freed SKB by stack ID | supported | Bidirectional bounded stack-anchor maps preserve identity through non-SKB teardown calls and delete both directions at `kfree_skbmem`; live gate requires ordered, read-clean `consume_skb` → `dst_release` → `kmem_cache_free` evidence on one SKB |
 | Trace non-SKB functions | supported | `--filter-non-skb-funcs` validates function existence in BTF, attaches through either backend and emits explicit `association: stack`; live checked with `ip_rcv` → `fib_table_lookup` same-SKB evidence |
-| Trace BPF helper calls | missing | Architecture-aware helper discovery and non-SKB association |
+| Trace BPF helper calls | supported | `--filter-track-bpf-helpers` performs bounded x86_64 decoding of current JIT programs from `/proc/kcore`, resolves exact direct callees through kallsyms, classifies them with BTF and uses explicit stack association; isolated TC/map-helper live gate |
 | Trace TC programs | missing | Enumerate programs and attach fentry dynamically |
 | Trace XDP programs | missing | XDP metadata path and fentry/fexit correlation |
 | Base metadata | supported | PID, CPU, comm, length, mark, protocol, ifindex, netns and MTU are captured with per-field read telemetry |
@@ -62,6 +62,8 @@ coverage and a relevant live-kernel check exist.
   interface lookup in a selected network namespace.
 - **rust-pcap** binds the system libpcap compiler; skbx validates its cBPF
   output before copying it into immutable eBPF configuration.
+- **iced-x86** is a focused MIT-licensed decoder used at startup to resolve
+  direct call targets from bounded x86_64 BPF JIT byte ranges.
 - Kernel hot-path logic remains small GPL-2.0 C compiled by Clang. No parsing,
   allocation, JSON encoding, or agent logic runs inside eBPF.
 

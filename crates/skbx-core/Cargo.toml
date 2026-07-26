@@ -10,6 +10,7 @@ rust-version.workspace = true
 blake3.workspace = true
 btf-rs.workspace = true
 fallible-iterator.workspace = true
+iced-x86.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

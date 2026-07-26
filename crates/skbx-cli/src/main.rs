@@ -7,8 +7,8 @@ use skbx_contract::{
     TimestampMode, TraceEvent,
 };
 use skbx_core::{
-    BoundedMap, DEFAULT_BTF_PATH, DropReasonTable, SymbolTable, build_probe_plan_with_non_skb,
-    capture_id, doctor, event_handle, explain_file, replay,
+    BoundedMap, DEFAULT_BTF_PATH, DropReasonTable, SymbolTable, build_probe_plan_with_bpf_helpers,
+    capture_id, discover_bpf_helpers, doctor, event_handle, explain_file, replay,
 };
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
@@ -70,6 +70,9 @@ enum Command {
         /// Trace these BTF-validated functions through bounded stack association.
         #[arg(long, value_delimiter = ',')]
         filter_non_skb_funcs: Vec<String>,
+        /// Trace direct kernel callees discovered from JIT-compiled BPF programs.
+        #[arg(long)]
+        filter_track_bpf_helpers: bool,
         /// Read target kernel BTF from this path.
         #[arg(long)]
         kernel_btf: Option<PathBuf>,
@@ -92,6 +95,9 @@ enum Command {
         /// Trace these BTF-validated functions through bounded stack association.
         #[arg(long, value_delimiter = ',')]
         filter_non_skb_funcs: Vec<String>,
+        /// Trace direct kernel callees discovered from JIT-compiled BPF programs.
+        #[arg(long)]
+        filter_track_bpf_helpers: bool,
         /// Read target kernel BTF from this path.
         #[arg(long)]
         kernel_btf: Option<PathBuf>,
@@ -250,15 +256,18 @@ fn run(cli: Cli) -> Result<u8> {
             probes,
             filter_func,
             filter_non_skb_funcs,
+            filter_track_bpf_helpers,
             kernel_btf,
             kmods,
             all_kmods,
             json,
         } => {
-            let plan = build_probe_plan_with_non_skb(
+            let bpf_helpers = resolve_bpf_helpers(filter_track_bpf_helpers)?;
+            let plan = build_probe_plan_with_bpf_helpers(
                 &probes,
                 filter_func.as_deref(),
                 &filter_non_skb_funcs,
+                &bpf_helpers,
                 kernel_btf.as_deref(),
                 &kmods,
                 all_kmods,
@@ -300,6 +309,7 @@ fn run(cli: Cli) -> Result<u8> {
             probes,
             filter_func,
             filter_non_skb_funcs,
+            filter_track_bpf_helpers,
             kernel_btf,
             kmods,
             all_kmods,
@@ -326,6 +336,7 @@ fn run(cli: Cli) -> Result<u8> {
             &probes,
             filter_func.as_deref(),
             &filter_non_skb_funcs,
+            filter_track_bpf_helpers,
             kernel_btf.as_deref(),
             &kmods,
             all_kmods,
@@ -408,11 +419,33 @@ fn run(cli: Cli) -> Result<u8> {
     }
 }
 
+fn resolve_bpf_helpers(enabled: bool) -> Result<Vec<String>> {
+    if !enabled {
+        return Ok(Vec::new());
+    }
+    let discovery = discover_bpf_helpers().context("discover BPF JIT helper callees")?;
+    eprintln!(
+        "skbx: BPF helper discovery decoded {}/{} programs ({} bytes, {} read failures) and resolved {} exact callees",
+        discovery.programs_decoded,
+        discovery.programs_seen,
+        discovery.decoded_bytes,
+        discovery.program_read_failures,
+        discovery.helpers.len()
+    );
+    if discovery.helpers.is_empty() {
+        bail!(
+            "--filter-track-bpf-helpers found no exact kernel callees in currently JIT-compiled BPF programs"
+        );
+    }
+    Ok(discovery.helpers)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn capture(
     requested: &[String],
     filter_func: Option<&str>,
     non_skb_functions: &[String],
+    filter_track_bpf_helpers: bool,
     kernel_btf: Option<&Path>,
     modules: &[String],
     all_modules: bool,
@@ -453,7 +486,6 @@ fn capture(
     filters.tunnel_pcap_l2 = filter_tunnel_pcap_l2.map(str::to_owned);
     filters.tunnel_pcap_l3 = filter_tunnel_pcap_l3.map(str::to_owned);
     filters.track_skb = filter_track_skb;
-    filters.track_stack = !non_skb_functions.is_empty();
     if filter_track_skb
         && filters.mark_mask == 0
         && filters.ifindex == 0
@@ -464,14 +496,20 @@ fn capture(
     {
         bail!("--filter-track-skb requires at least one packet filter");
     }
-    let plan = build_probe_plan_with_non_skb(
+    let bpf_helpers = resolve_bpf_helpers(filter_track_bpf_helpers)?;
+    let plan = build_probe_plan_with_bpf_helpers(
         requested,
         filter_func,
         non_skb_functions,
+        &bpf_helpers,
         kernel_btf,
         modules,
         all_modules,
     )?;
+    filters.track_stack = plan
+        .probes
+        .iter()
+        .any(|probe| probe.available && probe.skb_argument.is_none());
     let attachments: Vec<_> = plan
         .probes
         .iter()

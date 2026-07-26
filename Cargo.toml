@@ -20,6 +20,7 @@ blake3 = "1.8.5"
 btf-rs = { version = "2.0.0", features = ["regex"] }
 clap = { version = "4.6.4", features = ["derive"] }
 fallible-iterator = "0.3.0"
+iced-x86 = { version = "1.21.0", default-features = false, features = ["decoder", "std"] }
 libc = "0.2.189"
 libbpf-rs = "0.26.2"
 nix = { version = "0.31.3", features = ["sched"] }

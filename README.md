@@ -37,7 +37,8 @@ split BTF. It records:
   TCP/UDP ports, ICMP type/code and TCP flags;
 - optional inner tunnel tuples from kernel-maintained SKB header offsets;
 - BTF-validated non-SKB functions associated through bounded frame-pointer
-  anchors, with every event labeled `direct` or `stack`;
+  anchors, including exact callees decoded from JIT-compiled BPF programs,
+  with every event labeled `direct` or `stack`;
 - caller, network namespace, MTU and the SKB control buffer;
 - BTF-decoded SKB drop reasons on supported drop functions;
 - kernel ring-buffer reserve failures.
@@ -49,9 +50,8 @@ synchronization point. Named interfaces are resolved in the namespace
 selected by `--filter-netns`, and device-less output SKBs fall back to their
 socket namespace.
 
-It does **not yet** claim full `pwru` parity. Packet-byte/BTF dumps, tunnel
-encapsulation-specific formatting, TC/XDP tracing and helper/map argument
-tracing remain explicit gaps.
+It does **not yet** claim full `pwru` parity. Packet-byte/BTF dumps, TC/XDP
+program tracing and BPF map argument tracing remain explicit gaps.
 
 ## Commands
 
@@ -114,7 +114,10 @@ the same evidence-addressed SKB identity. `sudo
 scripts/live-stack-lifetime-test.sh target/debug/skbx` verifies ordered
 same-SKB evidence across the logical-free teardown path:
 `consume_skb` → `dst_release` → `kmem_cache_free`. The association is removed
-at `kfree_skbmem`, before the SKB allocation itself is returned.
+at `kfree_skbmem`, before the SKB allocation itself is returned. `sudo
+scripts/live-bpf-helper-test.sh target/debug/skbx` loads an isolated TC
+classifier and proves automatic JIT-callee discovery with ordered
+`tcf_classify` → map-helper evidence.
 
 ## Architecture
 
