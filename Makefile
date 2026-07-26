@@ -1,4 +1,4 @@
-.PHONY: check build benchmark live-tunnel
+.PHONY: check build benchmark live-tunnel live-netns
 
 check:
 	cargo fmt --all -- --check
@@ -14,3 +14,7 @@ benchmark:
 live-tunnel:
 	cargo build --locked --offline
 	sudo ./scripts/live-tunnel-test.sh target/debug/skbx
+
+live-netns:
+	cargo build --locked --offline
+	sudo ./scripts/live-netns-test.sh target/debug/skbx

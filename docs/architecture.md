@@ -87,7 +87,8 @@ filesystem reads.
 
 - ICMP and bounded IPv6 extension-header decoding (complete);
 - tunnel filters and inner tuple decoding (complete);
-- full network namespace and process enrichment;
+- network namespace and cross-namespace interface filtering (complete);
+- process enrichment;
 - split-BTF kernel module discovery (complete).
 
 ### Phase 3 — agent-native analysis

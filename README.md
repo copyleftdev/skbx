@@ -43,7 +43,9 @@ split BTF. It records:
 Capture also supports in-kernel mark/interface/netns filters, outer and
 independent inner-L2/inner-L3 libpcap expressions, optional kernel stacks,
 bounded SKB clone/copy tracking and an agent-safe `--ready-file`
-synchronization point.
+synchronization point. Named interfaces are resolved in the namespace
+selected by `--filter-netns`, and device-less output SKBs fall back to their
+socket namespace.
 
 It does **not yet** claim full `pwru` parity. Packet-byte/BTF dumps, tunnel
 encapsulation-specific formatting, TC/XDP tracing and helper/map argument
@@ -102,6 +104,8 @@ test in release mode.
 On a disposable Linux test host, `sudo scripts/live-tunnel-test.sh
 target/debug/skbx` creates two temporary network namespaces, verifies VXLAN
 outer/inner filtering and tuple evidence, then removes both namespaces.
+`sudo scripts/live-netns-test.sh target/debug/skbx` similarly verifies
+cross-namespace interface lookup and the socket namespace fallback.
 
 ## Architecture
 

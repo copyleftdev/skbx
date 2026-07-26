@@ -134,6 +134,13 @@ impl Describe {
                     description: "compile libpcap syntax and execute validated cBPF in kernel space",
                 },
                 Capability {
+                    name: "namespace-interface-filter",
+                    status: supported.clone(),
+                    requires: "network namespace path for cross-namespace names",
+                    cost: "one startup setns round trip plus bounded kernel reads",
+                    description: "resolve interface names in the selected namespace and recover namespace identity from skb device or socket",
+                },
+                Capability {
                     name: "packet-tuple-decoding",
                     status: supported.clone(),
                     requires: "packet header access",

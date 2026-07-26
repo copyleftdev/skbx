@@ -17,8 +17,8 @@ coverage and a relevant live-kernel check exist.
 | Named kernel modules / all modules | supported | `--kmods` and `--all-kmods` parse base/split BTF with module-qualified plan and capture provenance |
 | pcap expression filter | supported | rust-pcap/libpcap compiler plus verifier-bounded in-kernel cBPF VM; validates and accepts up to pwru's 4096-instruction ceiling |
 | Tunnel L2/L3 pcap filters | supported | Independent `--filter-tunnel-pcap-l2` and `--filter-tunnel-pcap-l3` validated cBPF predicates; both predicates are ANDed and non-tunnel SKBs retain pwru's pass-through semantics; isolated VXLAN live gate |
-| Network namespace filter | partial | Path/inode resolution and early BPF predicate supported; socket fallback and ifname lookup inside another netns remain |
-| Interface filter | partial | Numeric ifindex and current-netns ifname supported; cross-netns ifname lookup remains |
+| Network namespace filter | supported | Absolute path/inode resolution and early BPF predicate; namespace identity falls back from `skb->dev` to `skb->sk`; isolated live gate covers device-less output SKBs |
+| Interface filter | supported | Numeric ifindex plus current/selected-netns ifname resolution; cross-netns lookup uses `nix` `setns` with mandatory restoration and is covered by an isolated live gate |
 | Mark/mask filter | supported | Decimal/hex `mark[/mask]`, immutable rodata configuration and early BPF predicate |
 | Arbitrary SKB expression filter | missing | Needs a constrained BTF-checked expression compiler |
 | Track SKB across transformations | partial | Bounded LRU identity map and clone/copy propagation supported; veth/XDP conversion remains |
@@ -58,6 +58,8 @@ coverage and a relevant live-kernel check exist.
   typed function-prototype traversal including split BTF.
 - **regex**, **serde**, **clap**, **thiserror**, **anyhow**, and **blake3** are
   mature ecosystem components used only for their narrow responsibilities.
+- **nix** provides the typed `setns` wrapper used for a single startup-time
+  interface lookup in a selected network namespace.
 - **rust-pcap** binds the system libpcap compiler; skbx validates its cBPF
   output before copying it into immutable eBPF configuration.
 - Kernel hot-path logic remains small GPL-2.0 C compiled by Clang. No parsing,

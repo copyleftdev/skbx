@@ -213,6 +213,39 @@ static __always_inline struct kernel_stats *stats(void)
     return bpf_map_lookup_elem(&telemetry, &key);
 }
 
+static __always_inline int read_netns(struct sk_buff *skb, __u32 *netns_id)
+{
+    struct net_device *device = 0;
+    struct sock *socket = 0;
+    struct net *net = 0;
+
+    *netns_id = 0;
+    if (bpf_core_read(&device, sizeof(device), &skb->dev))
+        return -1;
+    if (device) {
+        if (bpf_core_read(&net, sizeof(net), &device->nd_net.net))
+            return -1;
+        if (net) {
+            if (bpf_core_read(netns_id, sizeof(*netns_id), &net->ns.inum))
+                return -1;
+            if (*netns_id)
+                return 0;
+        }
+    }
+
+    /* Match pwru's fallback for output-path SKBs whose dev is not set yet. */
+    if (bpf_core_read(&socket, sizeof(socket), &skb->sk))
+        return -1;
+    if (!socket)
+        return 0;
+    if (bpf_core_read(&net, sizeof(net), &socket->__sk_common.skc_net.net))
+        return -1;
+    if (net &&
+        bpf_core_read(netns_id, sizeof(*netns_id), &net->ns.inum))
+        return -1;
+    return 0;
+}
+
 static __always_inline int packet_read(const unsigned char *head, __u32 tail,
                                        __u32 offset, void *destination,
                                        __u32 size)
@@ -597,7 +630,6 @@ static __always_inline int configured_filter_match(struct sk_buff *skb)
     __u32 ifindex = 0;
     __u32 netns = 0;
     struct net_device *device = 0;
-    struct net *net = 0;
 
     if (!CONFIG.filter_mark_mask && !CONFIG.filter_ifindex &&
         !CONFIG.filter_netns && !CONFIG.pcap_l2.len &&
@@ -618,7 +650,7 @@ static __always_inline int configured_filter_match(struct sk_buff *skb)
             goto filtered;
     }
 
-    if (CONFIG.filter_ifindex || CONFIG.filter_netns) {
+    if (CONFIG.filter_ifindex) {
         if (bpf_core_read(&device, sizeof(device), &skb->dev) || !device)
             goto filtered;
     }
@@ -629,9 +661,7 @@ static __always_inline int configured_filter_match(struct sk_buff *skb)
             goto filtered;
     }
     if (CONFIG.filter_netns) {
-        if (bpf_core_read(&net, sizeof(net), &device->nd_net.net) || !net)
-            return -1;
-        if (bpf_core_read(&netns, sizeof(netns), &net->ns.inum))
+        if (read_netns(skb, &netns))
             return -1;
         if (netns != CONFIG.filter_netns)
             goto filtered;
@@ -719,15 +749,11 @@ static __always_inline int trace_skb(struct pt_regs *ctx, struct sk_buff *skb)
             event->read_status |= READ_IFINDEX_FAILED;
         }
         if (device) {
-            struct net *net = 0;
             if (bpf_core_read(&event->mtu, sizeof(event->mtu), &device->mtu))
                 event->read_status |= READ_MTU_FAILED;
-            if (bpf_core_read(&net, sizeof(net), &device->nd_net.net) ||
-                !net ||
-                bpf_core_read(&event->netns, sizeof(event->netns),
-                              &net->ns.inum))
-                event->read_status |= READ_NETNS_FAILED;
         }
+        if (read_netns(skb, &event->netns))
+            event->read_status |= READ_NETNS_FAILED;
         if (bpf_core_read(event->control_buffer,
                           sizeof(event->control_buffer), &skb->cb))
             event->read_status |= READ_CB_FAILED;

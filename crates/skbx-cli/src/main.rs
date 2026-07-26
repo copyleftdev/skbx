@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
+use nix::sched::{CloneFlags, setns};
 use skbx_contract::{
     CONTRACT_VERSION, CaptureEnd, CaptureFilters, CaptureLimits, CaptureStart, Describe, Envelope,
     FunctionRef, PacketMeta, PacketTuple, PresentedTimestamp, StopReason, TimestampMode,
@@ -712,29 +713,27 @@ fn resolve_filters(
     ifname: Option<&str>,
     netns_spec: Option<&str>,
 ) -> Result<CaptureFilters> {
-    if ifname.is_some() && netns_spec.is_some() {
-        bail!(
-            "--filter-ifname with --filter-netns requires namespace-aware interface resolution; use --filter-ifindex"
-        );
-    }
     let (mark, mark_mask) = mark_spec.map(parse_mark).transpose()?.unwrap_or((0, 0));
+    let explicit_netns = netns_spec.map(parse_netns).transpose()?;
     let resolved_ifindex = match (ifindex, ifname) {
         (Some(index), None) => index,
         (None, Some(name)) => {
-            let name = CString::new(name).context("interface name contains a NUL byte")?;
-            // SAFETY: name is a valid NUL-terminated string for the duration
-            // of this call.
-            let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
-            if index == 0 {
-                return Err(std::io::Error::last_os_error())
-                    .with_context(|| "resolve --filter-ifname");
+            if netns_spec.is_some_and(|spec| spec.starts_with("inode:")) {
+                bail!("inode network namespace cannot be used with --filter-ifname");
             }
-            index
+            resolve_ifindex(name, netns_spec)?
         }
         (None, None) => 0,
         (Some(_), Some(_)) => unreachable!("clap rejects conflicting interface selectors"),
     };
-    let netns = netns_spec.map(parse_netns).transpose()?.unwrap_or(0);
+    // Interface indexes are namespace-local. Match pwru by coupling a named
+    // interface to the selected namespace, or to the current namespace when
+    // --filter-netns was omitted.
+    let netns = if ifname.is_some() {
+        explicit_netns.unwrap_or(netns_inode("/proc/self/ns/net")?)
+    } else {
+        explicit_netns.unwrap_or(0)
+    };
     Ok(CaptureFilters {
         mark,
         mark_mask,
@@ -745,6 +744,35 @@ fn resolve_filters(
         tunnel_pcap_l2: None,
         tunnel_pcap_l3: None,
     })
+}
+
+fn resolve_ifindex(name: &str, netns_path: Option<&str>) -> Result<u32> {
+    let resolve_current = || {
+        let name = CString::new(name).context("interface name contains a NUL byte")?;
+        // SAFETY: name is a valid NUL-terminated string for this call.
+        let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
+        if index == 0 {
+            return Err(std::io::Error::last_os_error())
+                .with_context(|| format!("resolve interface {name:?}"));
+        }
+        Ok(index)
+    };
+    let Some(netns_path) = netns_path else {
+        return resolve_current();
+    };
+    if netns_inode(netns_path)? == netns_inode("/proc/self/ns/net")? {
+        return resolve_current();
+    }
+
+    let current = File::open("/proc/self/ns/net").context("open current network namespace")?;
+    let target = File::open(netns_path)
+        .with_context(|| format!("open target network namespace {netns_path}"))?;
+    setns(&target, CloneFlags::CLONE_NEWNET)
+        .with_context(|| format!("enter target network namespace {netns_path}"))?;
+    let resolved = resolve_current();
+    setns(&current, CloneFlags::CLONE_NEWNET)
+        .context("restore current network namespace after interface lookup")?;
+    resolved
 }
 
 fn parse_mark(spec: &str) -> Result<(u32, u32)> {
@@ -769,8 +797,12 @@ fn parse_netns(spec: &str) -> Result<u32> {
     if !spec.starts_with('/') {
         bail!("network namespace must be an absolute path or inode:<number>");
     }
-    let inode = std::fs::metadata(spec)
-        .with_context(|| format!("stat network namespace {spec}"))?
+    netns_inode(spec)
+}
+
+fn netns_inode(path: &str) -> Result<u32> {
+    let inode = std::fs::metadata(path)
+        .with_context(|| format!("stat network namespace {path}"))?
         .ino();
     inode
         .try_into()
@@ -1058,6 +1090,13 @@ mod tests {
         assert_eq!(parse_mark("12").unwrap(), (12, u32::MAX));
         assert!(parse_mark("1/2/3").is_err());
         assert_eq!(parse_netns("inode:42").unwrap(), 42);
+        let current = resolve_filters(None, None, Some("lo"), None).unwrap();
+        assert!(current.ifindex > 0);
+        assert_eq!(current.netns, netns_inode("/proc/self/ns/net").unwrap());
+        let explicit = resolve_filters(None, None, Some("lo"), Some("/proc/self/ns/net")).unwrap();
+        assert_eq!(explicit.ifindex, current.ifindex);
+        assert_eq!(explicit.netns, current.netns);
+        assert!(resolve_filters(None, None, Some("lo"), Some("inode:42")).is_err());
     }
 
     #[test]

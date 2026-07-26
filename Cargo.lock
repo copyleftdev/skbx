@@ -545,6 +545,7 @@ dependencies = [
  "anyhow",
  "clap",
  "libc",
+ "nix",
  "pcap",
  "serde",
  "serde_json",
