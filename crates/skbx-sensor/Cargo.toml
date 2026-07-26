@@ -1,0 +1,18 @@
+[package]
+name = "skbx-sensor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[features]
+default = []
+ebpf = ["dep:libbpf-rs", "dep:libc"]
+
+[dependencies]
+libc = { workspace = true, optional = true }
+libbpf-rs = { workspace = true, optional = true }
+skbx-contract.workspace = true
+thiserror.workspace = true

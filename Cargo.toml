@@ -1,0 +1,46 @@
+[workspace]
+members = [
+    "crates/skbx-cli",
+    "crates/skbx-contract",
+    "crates/skbx-core",
+    "crates/skbx-sensor",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/copyleftdev/skbx"
+rust-version = "1.85"
+
+[workspace.dependencies]
+anyhow = "1.0.104"
+blake3 = "1.8.5"
+btf-rs = { version = "2.0.0", features = ["regex"] }
+clap = { version = "4.6.4", features = ["derive"] }
+fallible-iterator = "0.3.0"
+libc = "0.2.189"
+libbpf-rs = "0.26.2"
+pcap = "2.4.0"
+regex = "1.12.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.18"
+time = { version = "=0.3.41", features = ["formatting"] }
+
+skbx-contract = { path = "crates/skbx-contract" }
+skbx-core = { path = "crates/skbx-core" }
+skbx-sensor = { path = "crates/skbx-sensor" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[profile.dev-release]
+inherits = "release"
+lto = false
+codegen-units = 16
+strip = false

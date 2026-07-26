@@ -1,0 +1,61 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install eBPF build prerequisites
+        run: sudo apt-get update && sudo apt-get install --yes bpftool clang llvm libelf-dev libpcap-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Fetch locked dependencies
+        run: cargo fetch --locked
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Test all features
+        run: cargo test --workspace --all-features --locked --offline
+
+      - name: Reject lint warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings
+
+      - name: Build release binary
+        run: cargo build --release --locked --offline
+
+      - name: Verify agent contract
+        run: |
+          target/release/skbx describe --format json | jq -e '
+            .contract_version == "traceq/0.1.0"
+            and .defaults.max_events == 100000
+            and (.capabilities | length > 0)
+          '
+          target/release/skbx schema | jq -e '
+            ."$schema" == "https://json-schema.org/draft/2020-12/schema"
+            and ."$defs".TraceEvent
+          '
+
+      - name: Verify embedded eBPF metadata
+        run: |
+          object="$(find target/release/build -path '*/out/skbx.bpf.o' -print -quit)"
+          test -n "$object"
+          llvm-readelf --sections "$object" | grep -q '\.BTF'
+          llvm-readelf --sections "$object" | grep -q '\.BTF\.ext'

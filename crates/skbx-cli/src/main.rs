@@ -1,0 +1,1090 @@
+use anyhow::{Context, Result, bail};
+use clap::{Parser, Subcommand, ValueEnum};
+use skbx_contract::{
+    CONTRACT_VERSION, CaptureEnd, CaptureFilters, CaptureLimits, CaptureStart, Describe, Envelope,
+    FunctionRef, PacketMeta, PacketTuple, PresentedTimestamp, StopReason, TimestampMode,
+    TraceEvent,
+};
+use skbx_core::{
+    BoundedMap, DEFAULT_BTF_PATH, DropReasonTable, SymbolTable, build_probe_plan, capture_id,
+    doctor, event_handle, explain_file, replay,
+};
+use std::ffi::CString;
+use std::fs::{File, OpenOptions};
+use std::io::{BufReader, BufWriter, Write};
+use std::net::{Ipv4Addr, Ipv6Addr};
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+
+#[cfg(feature = "ebpf")]
+mod pcap_filter;
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const DEFAULT_DURATION_SECONDS: u64 = 10;
+const DEFAULT_MAX_EVENTS: u64 = 100_000;
+const DEFAULT_ROUTE_CACHE_ENTRIES: u32 = 65_536;
+
+static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "skbx",
+    version,
+    about = "Agent-first Linux packet-path observation",
+    long_about = None
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Emit the machine-readable tool contract.
+    Describe {
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
+    /// Emit the versioned traceq JSON Schema.
+    Schema,
+    /// Inspect host prerequisites without attaching probes.
+    Doctor {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Resolve a deterministic probe plan without attaching.
+    Plan {
+        #[arg(long = "probe")]
+        probes: Vec<String>,
+        /// Select BTF-discovered functions by a whole-name regular expression.
+        #[arg(long)]
+        filter_func: Option<String>,
+        /// Read target kernel BTF from this path.
+        #[arg(long)]
+        kernel_btf: Option<PathBuf>,
+        /// Include split BTF from these kernel modules.
+        #[arg(long = "kmods", value_delimiter = ',', conflicts_with = "all_kmods")]
+        kmods: Vec<String>,
+        /// Include split BTF from every module under the BTF directory.
+        #[arg(long, conflicts_with = "kmods")]
+        all_kmods: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run a bounded live eBPF capture.
+    Capture {
+        #[arg(long = "probe")]
+        probes: Vec<String>,
+        /// Select BTF-discovered functions by a whole-name regular expression.
+        #[arg(long)]
+        filter_func: Option<String>,
+        /// Read target kernel BTF from this path.
+        #[arg(long)]
+        kernel_btf: Option<PathBuf>,
+        /// Include split BTF from these kernel modules.
+        #[arg(long = "kmods", value_delimiter = ',', conflicts_with = "all_kmods")]
+        kmods: Vec<String>,
+        /// Include split BTF from every module under the BTF directory.
+        #[arg(long, conflicts_with = "kmods")]
+        all_kmods: bool,
+        /// Filter skb mark as mark[/mask], accepting decimal or 0x-prefixed values.
+        #[arg(long)]
+        filter_mark: Option<String>,
+        /// Filter by numeric interface index.
+        #[arg(long, conflicts_with = "filter_ifname")]
+        filter_ifindex: Option<u32>,
+        /// Filter by an interface in the current network namespace.
+        #[arg(long, conflicts_with = "filter_ifindex")]
+        filter_ifname: Option<String>,
+        /// Filter by network namespace path or inode:<number>.
+        #[arg(long)]
+        filter_netns: Option<String>,
+        /// Keep following matching SKBs and their clone/copy descendants.
+        #[arg(long)]
+        filter_track_skb: bool,
+        /// Capture up to 50 kernel stack frames per event.
+        #[arg(long)]
+        output_stack: bool,
+        /// Probe attachment backend; auto falls back to individual kprobes.
+        #[arg(long, value_enum, default_value_t = AttachmentBackend::Auto)]
+        backend: AttachmentBackend,
+        /// Timestamp presentation; raw monotonic timestamp_ns is always retained in JSON.
+        #[arg(long, value_enum, default_value_t = TimestampOutput::None)]
+        timestamp: TimestampOutput,
+        #[arg(long, default_value_t = DEFAULT_DURATION_SECONDS)]
+        duration: u64,
+        #[arg(long, default_value_t = DEFAULT_MAX_EVENTS)]
+        max_events: u64,
+        #[arg(long, default_value_t = DEFAULT_ROUTE_CACHE_ENTRIES)]
+        route_cache_entries: u32,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Jsonl)]
+        format: OutputFormat,
+        #[arg(long, default_value = "-")]
+        output: PathBuf,
+        /// Atomically create this file after every requested probe is attached.
+        #[arg(long)]
+        ready_file: Option<PathBuf>,
+        /// Exit 3 when the footer reports kernel or userspace event loss.
+        #[arg(long)]
+        fail_on_loss: bool,
+        /// libpcap-compatible packet filter expression.
+        #[arg(value_name = "PCAP_FILTER", trailing_var_arg = true)]
+        pcap_filter: Vec<String>,
+    },
+    /// Deterministically summarize a recorded traceq JSONL stream.
+    Replay {
+        input: PathBuf,
+        #[arg(long, value_enum, default_value_t = SummaryFormat::Json)]
+        format: SummaryFormat,
+    },
+    /// Retrieve an event and bounded same-SKB evidence by handle.
+    Explain { input: PathBuf, handle: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum OutputFormat {
+    Jsonl,
+    Text,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum AttachmentBackend {
+    Auto,
+    Kprobe,
+    KprobeMulti,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum TimestampOutput {
+    None,
+    Current,
+    Relative,
+    Absolute,
+}
+
+impl TimestampOutput {
+    fn label(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Current => "current",
+            Self::Relative => "relative",
+            Self::Absolute => "absolute",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum SummaryFormat {
+    Json,
+    Text,
+}
+
+fn main() -> ExitCode {
+    match run(Cli::parse()) {
+        Ok(code) => ExitCode::from(code),
+        Err(error) => {
+            eprintln!("skbx: {error:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run(cli: Cli) -> Result<u8> {
+    match cli.command {
+        Command::Describe { format } => {
+            if format != "json" {
+                bail!("describe: unsupported format {format:?}; use json");
+            }
+            write_pretty_stdout(&Describe::current(VERSION))?;
+            Ok(0)
+        }
+        Command::Schema => {
+            write_pretty_stdout(&skbx_contract::json_schema())?;
+            Ok(0)
+        }
+        Command::Doctor { json } => {
+            let report = doctor();
+            if json {
+                write_pretty_stdout(&report)?;
+            } else {
+                println!(
+                    "skbx doctor — kernel {} — {}",
+                    report.kernel_release,
+                    if report.ready { "READY" } else { "NOT READY" }
+                );
+                for check in &report.checks {
+                    println!(
+                        "  {:<5} {:<24} {}",
+                        format!("{:?}", check.status).to_lowercase(),
+                        check.name,
+                        check.evidence
+                    );
+                }
+            }
+            Ok(if report.ready { 0 } else { 1 })
+        }
+        Command::Plan {
+            probes,
+            filter_func,
+            kernel_btf,
+            kmods,
+            all_kmods,
+            json,
+        } => {
+            let plan = build_probe_plan(
+                &probes,
+                filter_func.as_deref(),
+                kernel_btf.as_deref(),
+                &kmods,
+                all_kmods,
+            )?;
+            if json {
+                write_pretty_stdout(&plan)?;
+            } else {
+                println!(
+                    "skbx plan — kernel {} — {} attachable, {} unavailable",
+                    plan.kernel_release, plan.attachable, plan.unavailable
+                );
+                for probe in &plan.probes {
+                    let argument = probe
+                        .skb_argument
+                        .map_or_else(|| "?".into(), |argument| argument.to_string());
+                    let target = match &probe.module {
+                        Some(module) => format!("{} [{module}]", probe.function),
+                        None => probe.function.clone(),
+                    };
+                    println!(
+                        "  {:<11} {} arg={} ({})",
+                        if probe.available {
+                            "attach"
+                        } else {
+                            "unavailable"
+                        },
+                        target,
+                        argument,
+                        probe.assumption
+                    );
+                }
+                for warning in &plan.warnings {
+                    eprintln!("skbx plan: warning: {warning}");
+                }
+            }
+            Ok(if plan.attachable > 0 { 0 } else { 1 })
+        }
+        Command::Capture {
+            probes,
+            filter_func,
+            kernel_btf,
+            kmods,
+            all_kmods,
+            filter_mark,
+            filter_ifindex,
+            filter_ifname,
+            filter_netns,
+            filter_track_skb,
+            output_stack,
+            backend,
+            timestamp,
+            duration,
+            max_events,
+            route_cache_entries,
+            format,
+            output,
+            ready_file,
+            fail_on_loss,
+            pcap_filter,
+        } => capture(
+            &probes,
+            filter_func.as_deref(),
+            kernel_btf.as_deref(),
+            &kmods,
+            all_kmods,
+            filter_mark.as_deref(),
+            filter_ifindex,
+            filter_ifname.as_deref(),
+            filter_netns.as_deref(),
+            filter_track_skb,
+            output_stack,
+            backend,
+            timestamp,
+            duration,
+            max_events,
+            route_cache_entries,
+            format,
+            &output,
+            ready_file.as_deref(),
+            fail_on_loss,
+            &pcap_filter,
+        ),
+        Command::Replay { input, format } => {
+            let reader = BufReader::new(
+                File::open(&input)
+                    .with_context(|| format!("open replay input {}", input.display()))?,
+            );
+            let summary = replay(reader)?;
+            match format {
+                SummaryFormat::Json => write_pretty_stdout(&summary)?,
+                SummaryFormat::Text => {
+                    println!(
+                        "skbx replay — capture {} — {} events — {} SKBs — {}",
+                        summary.capture_id,
+                        summary.events,
+                        summary.distinct_skbs,
+                        if summary.complete {
+                            "complete"
+                        } else {
+                            "INCOMPLETE"
+                        }
+                    );
+                    println!("Functions");
+                    for (function, count) in &summary.functions {
+                        println!("  {count:>10}  {function}");
+                    }
+                    if let Some(consensus) = &summary.route_consensus {
+                        println!(
+                            "Routes: patterns={} consensus={} support={}/{} confidence={}.{:02}% outliers={} ambiguous={} evictions={}",
+                            summary.route_patterns.len(),
+                            consensus.handle,
+                            consensus.routes,
+                            consensus.total_routes,
+                            consensus.confidence_basis_points / 100,
+                            consensus.confidence_basis_points % 100,
+                            consensus.outlier_routes,
+                            consensus.ambiguous,
+                            summary.route_evictions
+                        );
+                    }
+                    println!(
+                        "Reliability: kernel_reserve_failures={} decode_failures={} output_failures={}",
+                        summary.reliability.kernel_reserve_failures,
+                        summary.reliability.userspace_decode_failures,
+                        summary.reliability.output_failures
+                    );
+                }
+            }
+            Ok(if summary.complete { 0 } else { 3 })
+        }
+        Command::Explain { input, handle } => {
+            if !handle.starts_with("event:") {
+                bail!("explain handle must start with event:");
+            }
+            let explanation = explain_file(&input, &handle)?;
+            write_pretty_stdout(&explanation)?;
+            Ok(0)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn capture(
+    requested: &[String],
+    filter_func: Option<&str>,
+    kernel_btf: Option<&Path>,
+    modules: &[String],
+    all_modules: bool,
+    filter_mark: Option<&str>,
+    filter_ifindex: Option<u32>,
+    filter_ifname: Option<&str>,
+    filter_netns: Option<&str>,
+    filter_track_skb: bool,
+    output_stack: bool,
+    backend: AttachmentBackend,
+    timestamp: TimestampOutput,
+    duration_seconds: u64,
+    max_events: u64,
+    route_cache_entries: u32,
+    format: OutputFormat,
+    output_path: &Path,
+    ready_file: Option<&Path>,
+    fail_on_loss: bool,
+    pcap_filter: &[String],
+) -> Result<u8> {
+    if duration_seconds == 0 {
+        bail!("capture --duration must be greater than zero");
+    }
+    if max_events == 0 {
+        bail!("capture --max-events must be greater than zero");
+    }
+    if route_cache_entries == 0 {
+        bail!("capture --route-cache-entries must be greater than zero");
+    }
+    if let Some(path) = ready_file {
+        prepare_ready_file(path)?;
+    }
+    let mut filters = resolve_filters(filter_mark, filter_ifindex, filter_ifname, filter_netns)?;
+    filters.pcap = (!pcap_filter.is_empty()).then(|| pcap_filter.join(" "));
+    filters.track_skb = filter_track_skb;
+    if filter_track_skb
+        && filters.mark_mask == 0
+        && filters.ifindex == 0
+        && filters.netns == 0
+        && filters.pcap.is_none()
+    {
+        bail!("--filter-track-skb requires at least one packet filter");
+    }
+    let plan = build_probe_plan(requested, filter_func, kernel_btf, modules, all_modules)?;
+    let attachments: Vec<_> = plan
+        .probes
+        .iter()
+        .filter(|probe| probe.available)
+        .cloned()
+        .collect();
+    if attachments.is_empty() {
+        bail!("capture has no attachable probes; run `skbx plan --json`");
+    }
+    let probes: Vec<String> = attachments
+        .iter()
+        .map(|probe| match &probe.module {
+            Some(module) => format!("{} [{module}]", probe.function),
+            None => probe.function.clone(),
+        })
+        .collect();
+    for warning in &plan.warnings {
+        eprintln!("skbx capture: warning: {warning}");
+    }
+
+    #[cfg(not(feature = "ebpf"))]
+    {
+        let _ = (
+            duration_seconds,
+            max_events,
+            route_cache_entries,
+            backend,
+            timestamp,
+            format,
+            output_path,
+            ready_file,
+            fail_on_loss,
+        );
+        bail!("this skbx binary was built without the ebpf feature");
+    }
+
+    #[cfg(feature = "ebpf")]
+    {
+        install_signal_handlers();
+        STOP_REQUESTED.store(false, Ordering::Relaxed);
+
+        let started_unix_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("system clock is before the Unix epoch")?
+            .as_nanos()
+            .try_into()
+            .context("Unix timestamp does not fit in traceq u64 nanoseconds")?;
+        let started_monotonic_ns = monotonic_ns()?;
+        let id = capture_id(started_unix_ns, &plan.kernel_release, &probes);
+        let mut start = CaptureStart {
+            schema: CONTRACT_VERSION.into(),
+            capture_id: id.clone(),
+            started_unix_ns,
+            started_monotonic_ns,
+            kernel_release: plan.kernel_release.clone(),
+            probes: probes.clone(),
+            attachment_backend: String::new(),
+            timestamp_mode: timestamp.label().into(),
+            filters: filters.clone(),
+            limits: CaptureLimits {
+                duration_seconds,
+                max_events,
+                route_cache_entries,
+            },
+        };
+
+        // Attach before creating or writing the output artifact. If the host
+        // cannot load BPF, callers get an error rather than a misleading
+        // header-only trace.
+        let (pcap_l2, pcap_l3) = pcap_filter::compile(filters.pcap.as_deref())?;
+        let sensor_config = skbx_sensor::SensorConfig {
+            filter_mark: filters.mark,
+            filter_mark_mask: filters.mark_mask,
+            filter_ifindex: filters.ifindex,
+            filter_netns: filters.netns,
+            output_stack: u32::from(output_stack),
+            track_skb: u32::from(filter_track_skb),
+            pcap_l2,
+            pcap_l3,
+        };
+        let mut sensor = skbx_sensor::LiveSensor::attach(
+            &attachments,
+            kernel_btf,
+            &sensor_config,
+            route_cache_entries,
+            match backend {
+                AttachmentBackend::Auto => skbx_sensor::AttachmentMode::Auto,
+                AttachmentBackend::Kprobe => skbx_sensor::AttachmentMode::Kprobe,
+                AttachmentBackend::KprobeMulti => skbx_sensor::AttachmentMode::KprobeMulti,
+            },
+        )?;
+        start.attachment_backend = sensor.attachment_backend().into();
+        let output: Box<dyn Write> = if output_path == Path::new("-") {
+            Box::new(std::io::stdout())
+        } else {
+            Box::new(
+                File::create(output_path)
+                    .with_context(|| format!("create output {}", output_path.display()))?,
+            )
+        };
+        let mut writer = BufWriter::with_capacity(256 * 1024, output);
+        write_start(&mut writer, format, &start)?;
+        writer
+            .flush()
+            .context("flush capture header before readiness signal")?;
+        if let Some(path) = ready_file {
+            signal_ready(path)?;
+        }
+
+        let symbols = SymbolTable::from_kallsyms();
+        let drop_reasons =
+            DropReasonTable::from_btf(kernel_btf.unwrap_or_else(|| Path::new(DEFAULT_BTF_PATH)));
+        let deadline = Instant::now() + Duration::from_secs(duration_seconds);
+        let mut last_skb_timestamps = BoundedMap::<String, u64>::new(route_cache_entries as usize);
+        let mut seq = 0_u64;
+        let mut stop_reason = StopReason::Duration;
+
+        while Instant::now() < deadline {
+            if STOP_REQUESTED.load(Ordering::Relaxed) {
+                stop_reason = StopReason::Signal;
+                break;
+            }
+            if seq >= max_events {
+                stop_reason = StopReason::EventLimit;
+                break;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let timeout = remaining.min(Duration::from_millis(100));
+            for raw in sensor.poll(timeout)? {
+                if seq >= max_events {
+                    stop_reason = StopReason::EventLimit;
+                    break;
+                }
+                let stack = sensor.stack_frames(raw.stack_id);
+                let mut event = convert_event(&id, seq, raw, &symbols, &drop_reasons, &stack);
+                event.presentation_timestamp = present_timestamp(
+                    timestamp,
+                    &event,
+                    started_unix_ns,
+                    started_monotonic_ns,
+                    &mut last_skb_timestamps,
+                )?;
+                write_event(&mut writer, format, &event)?;
+                seq += 1;
+            }
+        }
+
+        let stats = sensor.stats()?;
+        let reliability =
+            stats.into_reliability(sensor.decode_failures(), sensor.enrichment_failures());
+        let complete = reliability.complete();
+        let end = CaptureEnd {
+            schema: CONTRACT_VERSION.into(),
+            capture_id: id,
+            events: seq,
+            reliability,
+            complete,
+            stop_reason,
+        };
+        write_end(&mut writer, format, &end)?;
+        writer.flush().context("flush capture output")?;
+
+        if fail_on_loss && !end.complete {
+            Ok(3)
+        } else {
+            Ok(0)
+        }
+    }
+}
+
+fn prepare_ready_file(path: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => {
+            bail!("ready file path is a directory: {}", path.display())
+        }
+        Ok(_) => std::fs::remove_file(path)
+            .with_context(|| format!("remove stale ready file {}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("inspect ready file {}", path.display())),
+    }
+}
+
+fn signal_ready(path: &Path) -> Result<()> {
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .with_context(|| format!("create ready file {}", path.display()))?;
+    Ok(())
+}
+
+fn monotonic_ns() -> Result<u64> {
+    let mut value = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: value points to an initialized timespec and CLOCK_MONOTONIC is
+    // supported on the Linux hosts where live capture is available.
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut value) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("read monotonic clock");
+    }
+    let seconds = u64::try_from(value.tv_sec).context("negative monotonic seconds")?;
+    let nanoseconds = u64::try_from(value.tv_nsec).context("negative monotonic nanoseconds")?;
+    seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_add(nanoseconds))
+        .context("monotonic timestamp overflow")
+}
+
+fn present_timestamp(
+    mode: TimestampOutput,
+    event: &TraceEvent,
+    started_unix_ns: u64,
+    started_monotonic_ns: u64,
+    last_skb_timestamps: &mut BoundedMap<String, u64>,
+) -> Result<Option<PresentedTimestamp>> {
+    let (mode, value_ns, display) = match mode {
+        TimestampOutput::None => return Ok(None),
+        TimestampOutput::Current => (
+            TimestampMode::Current,
+            event.timestamp_ns,
+            event.timestamp_ns.to_string(),
+        ),
+        TimestampOutput::Relative => {
+            let previous = last_skb_timestamps
+                .remove(&event.skb)
+                .unwrap_or(event.timestamp_ns);
+            last_skb_timestamps.insert(event.skb.clone(), event.timestamp_ns);
+            let value = event.timestamp_ns.saturating_sub(previous);
+            (TimestampMode::Relative, value, value.to_string())
+        }
+        TimestampOutput::Absolute => {
+            let value = started_unix_ns
+                .saturating_add(event.timestamp_ns.saturating_sub(started_monotonic_ns));
+            let display = OffsetDateTime::from_unix_timestamp_nanos(i128::from(value))
+                .context("absolute timestamp is outside supported range")?
+                .format(&Rfc3339)
+                .context("format absolute timestamp")?;
+            (TimestampMode::Absolute, value, display)
+        }
+    };
+    Ok(Some(PresentedTimestamp {
+        mode,
+        value_ns,
+        display,
+    }))
+}
+
+fn resolve_filters(
+    mark_spec: Option<&str>,
+    ifindex: Option<u32>,
+    ifname: Option<&str>,
+    netns_spec: Option<&str>,
+) -> Result<CaptureFilters> {
+    if ifname.is_some() && netns_spec.is_some() {
+        bail!(
+            "--filter-ifname with --filter-netns requires namespace-aware interface resolution; use --filter-ifindex"
+        );
+    }
+    let (mark, mark_mask) = mark_spec.map(parse_mark).transpose()?.unwrap_or((0, 0));
+    let resolved_ifindex = match (ifindex, ifname) {
+        (Some(index), None) => index,
+        (None, Some(name)) => {
+            let name = CString::new(name).context("interface name contains a NUL byte")?;
+            // SAFETY: name is a valid NUL-terminated string for the duration
+            // of this call.
+            let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
+            if index == 0 {
+                return Err(std::io::Error::last_os_error())
+                    .with_context(|| "resolve --filter-ifname");
+            }
+            index
+        }
+        (None, None) => 0,
+        (Some(_), Some(_)) => unreachable!("clap rejects conflicting interface selectors"),
+    };
+    let netns = netns_spec.map(parse_netns).transpose()?.unwrap_or(0);
+    Ok(CaptureFilters {
+        mark,
+        mark_mask,
+        ifindex: resolved_ifindex,
+        netns,
+        track_skb: false,
+        pcap: None,
+    })
+}
+
+fn parse_mark(spec: &str) -> Result<(u32, u32)> {
+    let mut parts = spec.split('/');
+    let mark = parse_u32(parts.next().unwrap_or_default()).context("invalid mark")?;
+    let mask = parts
+        .next()
+        .map(parse_u32)
+        .transpose()
+        .context("invalid mark mask")?
+        .unwrap_or(u32::MAX);
+    if parts.next().is_some() {
+        bail!("mark filter must use mark[/mask]");
+    }
+    Ok((mark, mask))
+}
+
+fn parse_netns(spec: &str) -> Result<u32> {
+    if let Some(inode) = spec.strip_prefix("inode:") {
+        return parse_u32(inode).context("invalid network namespace inode");
+    }
+    if !spec.starts_with('/') {
+        bail!("network namespace must be an absolute path or inode:<number>");
+    }
+    let inode = std::fs::metadata(spec)
+        .with_context(|| format!("stat network namespace {spec}"))?
+        .ino();
+    inode
+        .try_into()
+        .context("network namespace inode does not fit u32")
+}
+
+fn parse_u32(value: &str) -> Result<u32> {
+    let (digits, radix) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .map_or((value, 10), |digits| (digits, 16));
+    u32::from_str_radix(digits, radix).with_context(|| format!("parse {value:?} as u32"))
+}
+
+fn convert_event(
+    capture_id: &str,
+    seq: u64,
+    raw: skbx_sensor::RawTraceEvent,
+    symbols: &SymbolTable,
+    drop_reasons: &DropReasonTable,
+    stack: &[u64],
+) -> TraceEvent {
+    let function_symbol = symbols.resolve(raw.function_ip).map(str::to_owned);
+    let drop_reason = function_symbol
+        .as_deref()
+        .and_then(|function| drop_reason_parameter(function, &raw))
+        .and_then(|reason| drop_reasons.resolve(reason))
+        .map(str::to_owned);
+    TraceEvent {
+        schema: CONTRACT_VERSION.into(),
+        capture_id: capture_id.into(),
+        seq,
+        handle: event_handle(
+            capture_id,
+            seq,
+            raw.timestamp_ns,
+            raw.skb_addr,
+            raw.function_ip,
+        ),
+        timestamp_ns: raw.timestamp_ns,
+        presentation_timestamp: None,
+        cpu: raw.cpu,
+        pid: raw.pid,
+        command: raw.command_string(),
+        skb: format!("{:#x}", raw.skb_addr),
+        function: FunctionRef {
+            address: format!("{:#x}", raw.function_ip),
+            symbol: function_symbol,
+        },
+        caller: (raw.caller_ip != 0).then(|| FunctionRef {
+            address: format!("{:#x}", raw.caller_ip),
+            symbol: symbols.resolve(raw.caller_ip).map(str::to_owned),
+        }),
+        stack: stack
+            .iter()
+            .map(|address| FunctionRef {
+                address: format!("{address:#x}"),
+                symbol: symbols.resolve(*address).map(str::to_owned),
+            })
+            .collect(),
+        parameters: [
+            format!("{:#x}", raw.parameter_second),
+            format!("{:#x}", raw.parameter_third),
+        ],
+        drop_reason,
+        packet: PacketMeta {
+            len: raw.len,
+            protocol: u16::from_be(raw.protocol),
+            mark: raw.mark,
+            ifindex: raw.ifindex,
+            netns: raw.netns,
+            mtu: raw.mtu,
+            control_buffer: raw.control_buffer,
+            read_status: raw.read_status,
+            read_errors: raw.read_failures().into_iter().map(str::to_owned).collect(),
+        },
+        tuple: packet_tuple(&raw),
+    }
+}
+
+fn drop_reason_parameter(function: &str, raw: &skbx_sensor::RawTraceEvent) -> Option<u64> {
+    match function {
+        "kfree_skb_reason" => Some(raw.parameter_second),
+        "sk_skb_reason_drop" => Some(raw.parameter_third),
+        _ => None,
+    }
+}
+
+fn packet_tuple(raw: &skbx_sensor::RawTraceEvent) -> Option<PacketTuple> {
+    let (source, destination) = match raw.l3_protocol {
+        0x0800 => (
+            Ipv4Addr::new(raw.saddr[0], raw.saddr[1], raw.saddr[2], raw.saddr[3]).to_string(),
+            Ipv4Addr::new(raw.daddr[0], raw.daddr[1], raw.daddr[2], raw.daddr[3]).to_string(),
+        ),
+        0x86dd => (
+            Ipv6Addr::from(raw.saddr).to_string(),
+            Ipv6Addr::from(raw.daddr).to_string(),
+        ),
+        _ => return None,
+    };
+    Some(PacketTuple {
+        source,
+        destination,
+        source_port: u16::from_be(raw.sport),
+        destination_port: u16::from_be(raw.dport),
+        l3_protocol: raw.l3_protocol,
+        l4_protocol: raw.l4_protocol,
+        tcp_flags: raw.tcp_flags,
+    })
+}
+
+fn write_start(writer: &mut impl Write, format: OutputFormat, start: &CaptureStart) -> Result<()> {
+    match format {
+        OutputFormat::Jsonl => write_envelope(writer, &Envelope::CaptureStart(start.clone())),
+        OutputFormat::Text => {
+            writeln!(
+                writer,
+                "skbx capture {} — kernel {} — probes: {}",
+                start.capture_id,
+                start.kernel_release,
+                start.probes.join(",")
+            )?;
+            if start.timestamp_mode == "none" {
+                writeln!(
+                    writer,
+                    "{:<5} {:<8} {:<18} {:<8} FUNCTION",
+                    "CPU", "PID", "SKB", "LEN"
+                )?;
+            } else {
+                writeln!(
+                    writer,
+                    "{:<30} {:<5} {:<8} {:<18} {:<8} FUNCTION",
+                    "TIME", "CPU", "PID", "SKB", "LEN"
+                )?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn write_event(writer: &mut impl Write, format: OutputFormat, event: &TraceEvent) -> Result<()> {
+    match format {
+        OutputFormat::Jsonl => write_envelope(writer, &Envelope::Event(event.clone())),
+        OutputFormat::Text => {
+            let function = event
+                .function
+                .symbol
+                .as_deref()
+                .unwrap_or(&event.function.address);
+            if let Some(timestamp) = &event.presentation_timestamp {
+                writeln!(
+                    writer,
+                    "{:<30} {:<5} {:<8} {:<18} {:<8} {}",
+                    timestamp.display, event.cpu, event.pid, event.skb, event.packet.len, function
+                )?;
+            } else {
+                writeln!(
+                    writer,
+                    "{:<5} {:<8} {:<18} {:<8} {}",
+                    event.cpu, event.pid, event.skb, event.packet.len, function
+                )?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn write_end(writer: &mut impl Write, format: OutputFormat, end: &CaptureEnd) -> Result<()> {
+    match format {
+        OutputFormat::Jsonl => write_envelope(writer, &Envelope::CaptureEnd(end.clone())),
+        OutputFormat::Text => {
+            writeln!(
+                writer,
+                "capture_end events={} complete={} reserve_failures={} decode_failures={} reason={:?}",
+                end.events,
+                end.complete,
+                end.reliability.kernel_reserve_failures,
+                end.reliability.userspace_decode_failures,
+                end.stop_reason
+            )?;
+            Ok(())
+        }
+    }
+}
+
+fn write_envelope(writer: &mut impl Write, envelope: &Envelope) -> Result<()> {
+    serde_json::to_writer(&mut *writer, envelope).context("encode traceq envelope")?;
+    writer.write_all(b"\n").context("write traceq newline")
+}
+
+fn write_pretty_stdout(value: &impl serde::Serialize) -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut writer = BufWriter::new(stdout.lock());
+    serde_json::to_writer_pretty(&mut writer, value).context("encode JSON")?;
+    writer.write_all(b"\n").context("write JSON newline")?;
+    writer.flush().context("flush stdout")
+}
+
+extern "C" fn request_stop(_: i32) {
+    STOP_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+fn install_signal_handlers() {
+    // SAFETY: request_stop is an async-signal-safe handler that only writes
+    // an AtomicBool. The process owns these signal dispositions.
+    unsafe {
+        libc::signal(
+            libc::SIGINT,
+            request_stop as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGTERM,
+            request_stop as *const () as libc::sighandler_t,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_conversion_is_stable() {
+        let raw = skbx_sensor::RawTraceEvent {
+            timestamp_ns: 1,
+            skb_addr: 2,
+            function_ip: 0x1010,
+            pid: 3,
+            cpu: 4,
+            len: 64,
+            protocol: 8,
+            caller_ip: 0x1005,
+            l3_protocol: 0x0800,
+            l4_protocol: 6,
+            saddr: [127, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            daddr: [127, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            sport: 1234_u16.to_be(),
+            dport: 443_u16.to_be(),
+            tcp_flags: 0x12,
+            command: {
+                let mut command = [0; 16];
+                command[..4].copy_from_slice(b"curl");
+                command
+            },
+            ..Default::default()
+        };
+        let symbols = SymbolTable::parse("0000000000001000 T ip_rcv\n");
+        let drop_reasons = DropReasonTable::default();
+        let a = convert_event("capture", 0, raw, &symbols, &drop_reasons, &[0x1010]);
+        let b = convert_event("capture", 0, raw, &symbols, &drop_reasons, &[0x1010]);
+        assert_eq!(a, b);
+        assert_eq!(a.function.symbol.as_deref(), Some("ip_rcv"));
+        assert_eq!(a.caller.as_ref().unwrap().symbol.as_deref(), Some("ip_rcv"));
+        assert_eq!(a.stack[0].symbol.as_deref(), Some("ip_rcv"));
+        assert_eq!(a.packet.protocol, 0x0800);
+        let tuple = a.tuple.unwrap();
+        assert_eq!(tuple.source, "127.0.0.1");
+        assert_eq!(tuple.destination_port, 443);
+        assert_eq!(tuple.tcp_flags, 0x12);
+    }
+
+    #[test]
+    fn filter_parsing_matches_pwru_mark_semantics() {
+        assert_eq!(parse_mark("0xa00/0xf00").unwrap(), (0xa00, 0xf00));
+        assert_eq!(parse_mark("12").unwrap(), (12, u32::MAX));
+        assert!(parse_mark("1/2/3").is_err());
+        assert_eq!(parse_netns("inode:42").unwrap(), 42);
+    }
+
+    #[test]
+    fn drop_reason_parameter_matches_kernel_signature() {
+        let raw = skbx_sensor::RawTraceEvent {
+            parameter_second: 11,
+            parameter_third: 22,
+            ..Default::default()
+        };
+        assert_eq!(drop_reason_parameter("kfree_skb_reason", &raw), Some(11));
+        assert_eq!(drop_reason_parameter("sk_skb_reason_drop", &raw), Some(22));
+        assert_eq!(drop_reason_parameter("consume_skb", &raw), None);
+    }
+
+    #[test]
+    fn readiness_replaces_stale_file_then_uses_create_new() {
+        let path = std::env::temp_dir().join(format!(
+            "skbx-ready-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"stale").unwrap();
+        prepare_ready_file(&path).unwrap();
+        assert!(!path.exists());
+
+        signal_ready(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"");
+        assert!(signal_ready(&path).is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn timestamp_presentations_keep_raw_time_and_bound_relative_state() {
+        let raw = skbx_sensor::RawTraceEvent {
+            timestamp_ns: 100,
+            skb_addr: 1,
+            function_ip: 2,
+            ..Default::default()
+        };
+        let event = convert_event(
+            "capture",
+            0,
+            raw,
+            &SymbolTable::default(),
+            &DropReasonTable::default(),
+            &[],
+        );
+        let mut last = BoundedMap::new(2);
+        let first = present_timestamp(TimestampOutput::Relative, &event, 1_000, 100, &mut last)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.value_ns, 0);
+
+        let mut second_event = event.clone();
+        second_event.timestamp_ns = 150;
+        let second = present_timestamp(
+            TimestampOutput::Relative,
+            &second_event,
+            1_000,
+            100,
+            &mut last,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(second.value_ns, 50);
+        assert_eq!(second_event.timestamp_ns, 150);
+
+        let absolute = present_timestamp(
+            TimestampOutput::Absolute,
+            &second_event,
+            1_700_000_000_000_000_000,
+            100,
+            &mut last,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(absolute.value_ns, 1_700_000_000_000_000_050);
+        assert!(absolute.display.ends_with('Z'));
+    }
+}

@@ -1,0 +1,5 @@
+/target/
+/dist/
+*.jsonl
+*.trace
+!crates/**/tests/fixtures/*.jsonl
