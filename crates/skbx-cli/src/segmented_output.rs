@@ -227,6 +227,7 @@ mod tests {
             timestamp_mode: "none".into(),
             output_tunnel: false,
             metadata_projections: Vec::new(),
+            btf_dump_types: Vec::new(),
             segment: None,
             filters: CaptureFilters::default(),
             limits: CaptureLimits {
@@ -262,6 +263,7 @@ mod tests {
             drop_reason: None,
             bpf_map: None,
             metadata: Vec::new(),
+            btf_dumps: Vec::new(),
             packet: PacketMeta::default(),
             tuple: None,
             tunnel_tuple: None,

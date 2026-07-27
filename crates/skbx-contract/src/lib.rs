@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 //! Versioned contracts shared by the CLI, sensor and replay engine.
 
 use serde::{Deserialize, Serialize};
@@ -210,6 +211,13 @@ impl Describe {
                     description: "compile up to four &&-joined typed scalar comparisons into immutable access plans with explicit read-failure telemetry",
                 },
                 Capability {
+                    name: "atomic-btf-structure-dumps",
+                    status: supported.clone(),
+                    requires: "target kernel BTF and BPF_FUNC_snprintf_btf",
+                    cost: "one 8576-byte atomic record per event only when requested",
+                    description: "render bounded sk_buff and skb_shared_info evidence with required/captured byte counts, truncation and helper errors",
+                },
+                Capability {
                     name: "skb-drop-reason",
                     status: supported.clone(),
                     requires: "kernel BTF enum and a supported drop function",
@@ -408,6 +416,16 @@ pub struct MetadataValue {
     pub read_error: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BtfDump {
+    pub type_name: String,
+    pub rendered: Option<String>,
+    pub bytes_required: u64,
+    pub bytes_captured: u32,
+    pub truncated: bool,
+    pub read_error: Option<String>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventAssociation {
@@ -458,6 +476,8 @@ pub struct TraceEvent {
     pub bpf_map: Option<BpfMapOperation>,
     #[serde(default)]
     pub metadata: Vec<MetadataValue>,
+    #[serde(default)]
+    pub btf_dumps: Vec<BtfDump>,
     pub packet: PacketMeta,
     #[serde(default)]
     pub tuple: Option<PacketTuple>,
@@ -499,6 +519,8 @@ pub struct CaptureStart {
     pub output_tunnel: bool,
     #[serde(default)]
     pub metadata_projections: Vec<MetadataProjection>,
+    #[serde(default)]
+    pub btf_dump_types: Vec<String>,
     #[serde(default)]
     pub segment: Option<CaptureSegmentStart>,
     #[serde(default)]
@@ -679,6 +701,12 @@ pub fn json_schema() -> serde_json::Value {
                         "items": {"$ref": "#/$defs/MetadataProjection"},
                         "maxItems": 4
                     },
+                    "btf_dump_types": {
+                        "type": "array",
+                        "items": {"enum": ["sk_buff", "skb_shared_info"]},
+                        "maxItems": 2,
+                        "uniqueItems": true
+                    },
                     "segment": {
                         "oneOf": [
                             {"$ref": "#/$defs/CaptureSegmentStart"},
@@ -742,6 +770,11 @@ pub fn json_schema() -> serde_json::Value {
                         "type": "array",
                         "items": {"$ref": "#/$defs/MetadataValue"},
                         "maxItems": 4
+                    },
+                    "btf_dumps": {
+                        "type": "array",
+                        "items": {"$ref": "#/$defs/BtfDump"},
+                        "maxItems": 2
                     },
                     "packet": {"$ref": "#/$defs/PacketMeta"},
                     "tuple": {
@@ -886,6 +919,19 @@ pub fn json_schema() -> serde_json::Value {
                 },
                 "additionalProperties": false
             },
+            "BtfDump": {
+                "type": "object",
+                "required": ["type_name", "rendered", "bytes_required", "bytes_captured", "truncated", "read_error"],
+                "properties": {
+                    "type_name": {"enum": ["sk_buff", "skb_shared_info"]},
+                    "rendered": {"type": ["string", "null"]},
+                    "bytes_required": {"type": "integer", "minimum": 0},
+                    "bytes_captured": {"type": "integer", "minimum": 0, "maximum": 4092},
+                    "truncated": {"type": "boolean"},
+                    "read_error": {"type": ["string", "null"]}
+                },
+                "additionalProperties": false
+            },
             "MetadataUnsigned": {
                 "type": "object",
                 "required": ["kind", "value"],
@@ -1012,6 +1058,9 @@ mod tests {
         }));
         assert!(describe.capabilities.iter().any(|c| {
             c.name == "btf-checked-skb-scalar-filter" && c.status == CapabilityStatus::Supported
+        }));
+        assert!(describe.capabilities.iter().any(|c| {
+            c.name == "atomic-btf-structure-dumps" && c.status == CapabilityStatus::Supported
         }));
         assert!(
             describe.capabilities.iter().any(|c| {

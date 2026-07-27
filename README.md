@@ -45,6 +45,9 @@ split BTF. It records:
   including bounded pointer chains and typed per-field read errors;
 - up to four `&&`-joined, target-BTF-validated scalar `skb->…` filter
   comparisons, evaluated from immutable bounded access plans;
+- optional bounded BTF renderings of `struct sk_buff` and
+  `struct skb_shared_info`, atomically correlated with their event and carrying
+  explicit byte, truncation and helper-error evidence;
 - caller, network namespace, MTU and the SKB control buffer;
 - BTF-decoded SKB drop reasons on supported drop functions;
 - kernel ring-buffer reserve failures.
@@ -57,9 +60,9 @@ filter, a tracked identity, or a stack association. Named interfaces are
 resolved in the namespace selected by `--filter-netns`, and device-less
 output SKBs fall back to their socket namespace.
 
-It does **not yet** claim full `pwru` parity. Packet-byte/BTF dumps, TC/XDP
-program tracing, unrestricted expression syntax and XDP metadata projections
-remain explicit gaps.
+It does **not yet** claim full `pwru` parity. TC/XDP program tracing,
+unrestricted expression syntax and XDP metadata projections remain explicit
+gaps.
 
 ## Commands
 
@@ -81,6 +84,8 @@ sudo skbx capture --probe ip_rcv \
 sudo skbx capture --probe ip_rcv \
   --filter-skb-expr 'skb->mark == 42 && skb->dev->ifindex > 0' \
   --output trace.jsonl
+sudo skbx capture --probe ip_rcv --output-skb \
+  --output-skb-shared-info --output trace.jsonl
 sudo skbx capture --probe ip_rcv --output trace.jsonl \
   --output-max-bytes 104857600 --output-max-backups 4 --output-compress
 skbx replay trace.jsonl --format json
@@ -146,7 +151,9 @@ scripts/live-xdp-lineage-test.sh target/debug/skbx` proves that identity also
 survives XDP_TX frame transport into a newly allocated SKB, labeled
 `tracked_xdp`. `sudo scripts/live-skb-filter-test.sh target/debug/skbx`
 proves that BTF-compiled scalar predicates reject unmarked traffic and retain
-marked traffic with matching projected values.
+marked traffic with matching projected values. `sudo
+scripts/live-btf-dump-test.sh target/debug/skbx` proves atomic `sk_buff` and
+shared-info renderings alongside an existing metadata projection.
 
 ## Architecture
 

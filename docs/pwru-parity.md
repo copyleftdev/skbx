@@ -31,7 +31,7 @@ coverage and a relevant live-kernel check exist.
 | IPv4/IPv6 L4 tuple | supported | Verifier-bounded IPv4 plus IPv6 decoder with at most eight extension headers; TCP/UDP ports, TCP flags, ICMPv4/ICMPv6 type/code and non-initial fragment handling |
 | TCP flags | supported | Captured from the TCP wire header |
 | Tunnel tuple | supported | `--output-tunnel` decodes from the kernel-maintained `inner_network_header`; isolated VXLAN gate validates outer UDP and inner ICMP evidence with zero read/reserve failures |
-| Full `sk_buff` / shared-info dump | missing | Needs `bpf_snprintf_btf` buffers or a typed bounded field projection |
+| Full `sk_buff` / shared-info dump | supported | `--output-skb` and `--output-skb-shared-info` preflight target BTF/helper support, render into a per-CPU 4092-byte buffer per type, and atomically emit one 8576-byte rich record with required/captured byte counts, truncation and helper errors; compact records remain unchanged when disabled; isolated live gate combines both dumps with metadata evidence |
 | SKB control buffer | supported | Fixed 20-byte CO-RE read |
 | Custom SKB/XDP metadata expressions | partial | SKB side supports at most four strict target-BTF-validated scalar paths, four access steps, typed values and per-field failures via optional 264/360-byte records; XDP projections remain missing |
 | Caller | supported | Return address capture and deterministic kallsyms enrichment |

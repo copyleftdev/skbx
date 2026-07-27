@@ -25,6 +25,11 @@ pub const MAP_READ_KEY_FAILED: u8 = 1 << 1;
 pub const MAP_READ_VALUE_FAILED: u8 = 1 << 2;
 pub const MAX_MAP_CAPTURE_BYTES: usize = 32;
 pub const MAX_METADATA_PROJECTIONS: usize = 4;
+pub const BTF_DUMP_SK_BUFF: u8 = 1 << 0;
+pub const BTF_DUMP_SHARED_INFO: u8 = 1 << 1;
+pub const BTF_RECORD_COMPONENT_MAP: u8 = 1 << 0;
+pub const BTF_RECORD_COMPONENT_METADATA: u8 = 1 << 1;
+pub const MAX_BTF_DUMP_BYTES: usize = 4092;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -204,12 +209,68 @@ impl RawMapMetadataTraceEvent {
     }
 }
 
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RawBtfDumps {
+    pub skb_result: i64,
+    pub shared_info_result: i64,
+    pub requested: u8,
+    pub _pad: [u8; 7],
+    pub skb: [u8; MAX_BTF_DUMP_BYTES],
+    pub shared_info: [u8; MAX_BTF_DUMP_BYTES],
+}
+
+impl Default for RawBtfDumps {
+    fn default() -> Self {
+        Self {
+            skb_result: 0,
+            shared_info_result: 0,
+            requested: 0,
+            _pad: [0; 7],
+            skb: [0; MAX_BTF_DUMP_BYTES],
+            shared_info: [0; MAX_BTF_DUMP_BYTES],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RawBtfTraceEvent {
+    pub record: RawMapMetadataTraceEvent,
+    pub dumps: RawBtfDumps,
+    pub components: u8,
+    pub _pad: [u8; 7],
+}
+
+impl RawBtfTraceEvent {
+    pub const BYTE_LEN: usize = std::mem::size_of::<Self>();
+
+    fn from_bytes(bytes: &[u8]) -> Option<Box<Self>> {
+        if bytes.len() != Self::BYTE_LEN {
+            return None;
+        }
+        let mut record = Box::<Self>::new_uninit();
+        // SAFETY: the allocation is exactly Self::BYTE_LEN bytes, every byte
+        // is initialized from the ring sample, and Self is plain C-layout
+        // data with no invalid bit patterns or drop-bearing fields.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                record.as_mut_ptr().cast::<u8>(),
+                bytes.len(),
+            );
+            Some(record.assume_init())
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RawObservation {
     Trace(RawTraceEvent),
     Metadata(RawMetadataTraceEvent),
     Map(RawMapTraceEvent),
     MapMetadata(RawMapMetadataTraceEvent),
+    Btf(Box<RawBtfTraceEvent>),
 }
 
 impl RawObservation {
@@ -222,18 +283,37 @@ impl RawObservation {
             RawMapTraceEvent::from_bytes(bytes).map(Self::Map)
         } else if bytes.len() == RawMapMetadataTraceEvent::BYTE_LEN {
             RawMapMetadataTraceEvent::from_bytes(bytes).map(Self::MapMetadata)
+        } else if bytes.len() == RawBtfTraceEvent::BYTE_LEN {
+            RawBtfTraceEvent::from_bytes(bytes).map(Self::Btf)
         } else {
             None
         }
     }
 
-    pub fn into_parts(self) -> (RawTraceEvent, Option<RawMapTraceEvent>, Option<RawMetadata>) {
+    pub fn into_parts(
+        self,
+    ) -> (
+        RawTraceEvent,
+        Option<RawMapTraceEvent>,
+        Option<RawMetadata>,
+        Option<RawBtfDumps>,
+    ) {
         match self {
-            Self::Trace(event) => (event, None, None),
-            Self::Metadata(record) => (record.event, None, Some(record.metadata)),
-            Self::Map(map) => (map.event, Some(map), None),
-            Self::MapMetadata(record) => {
-                (record.map.event, Some(record.map), Some(record.metadata))
+            Self::Trace(event) => (event, None, None, None),
+            Self::Metadata(record) => (record.event, None, Some(record.metadata), None),
+            Self::Map(map) => (map.event, Some(map), None, None),
+            Self::MapMetadata(record) => (
+                record.map.event,
+                Some(record.map),
+                Some(record.metadata),
+                None,
+            ),
+            Self::Btf(record) => {
+                let map = (record.components & BTF_RECORD_COMPONENT_MAP != 0)
+                    .then_some(record.record.map);
+                let metadata = (record.components & BTF_RECORD_COMPONENT_METADATA != 0)
+                    .then_some(record.record.metadata);
+                (record.record.map.event, map, metadata, Some(record.dumps))
             }
         }
     }
@@ -299,6 +379,12 @@ mod tests {
         assert_eq!(std::mem::size_of::<RawMetadata>(), 40);
         assert_eq!(RawMetadataTraceEvent::BYTE_LEN, 264);
         assert_eq!(RawMapMetadataTraceEvent::BYTE_LEN, 360);
+        assert_eq!(std::mem::size_of::<RawBtfDumps>(), 8208);
+        assert_eq!(RawBtfTraceEvent::BYTE_LEN, 8576);
+        assert!(
+            std::mem::size_of::<RawObservation>() <= 368,
+            "optional BTF dumps must not inflate compact queued observations"
+        );
         assert!(matches!(
             RawObservation::from_bytes(&[0; 224]),
             Some(RawObservation::Trace(_))
@@ -315,6 +401,18 @@ mod tests {
             RawObservation::from_bytes(&[0; 360]),
             Some(RawObservation::MapMetadata(_))
         ));
+        assert!(matches!(
+            RawObservation::from_bytes(&[0; 8576]),
+            Some(RawObservation::Btf(_))
+        ));
+        let record = RawBtfTraceEvent {
+            components: BTF_RECORD_COMPONENT_MAP | BTF_RECORD_COMPONENT_METADATA,
+            ..Default::default()
+        };
+        let (_, map, metadata, dumps) = RawObservation::Btf(Box::new(record)).into_parts();
+        assert!(map.is_some());
+        assert!(metadata.is_some());
+        assert!(dumps.is_some());
         assert!(RawObservation::from_bytes(&[0; 319]).is_none());
     }
 

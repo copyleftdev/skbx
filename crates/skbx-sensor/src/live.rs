@@ -91,6 +91,8 @@ pub struct SensorConfig {
     pub metadata: [MetadataAccess; crate::MAX_METADATA_PROJECTIONS],
     pub scalar_filter_count: u32,
     pub scalar_filters: [ScalarFilterCondition; crate::MAX_METADATA_PROJECTIONS],
+    pub output_skb_dump: u32,
+    pub output_shared_info_dump: u32,
 }
 
 #[cfg(test)]

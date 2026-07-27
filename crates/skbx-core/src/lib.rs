@@ -2,6 +2,7 @@
 
 mod bounded;
 mod bpf_helpers;
+mod btf_dump;
 mod doctor;
 mod drop_reason;
 mod evidence;
@@ -13,6 +14,7 @@ mod symbols;
 
 pub use bounded::BoundedMap;
 pub use bpf_helpers::{BpfHelperDiscovery, BpfHelperError, discover_bpf_helpers};
+pub use btf_dump::{BtfDumpSupportError, ensure_btf_dump_support};
 pub use doctor::{DoctorCheck, DoctorReport, doctor};
 pub use drop_reason::DropReasonTable;
 pub use evidence::{capture_id, event_handle, route_handle};

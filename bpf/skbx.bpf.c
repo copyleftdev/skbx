@@ -55,6 +55,11 @@
 #define MAX_MAP_CAPTURE_BYTES 32
 #define MAX_METADATA_PROJECTIONS 4
 #define MAX_METADATA_ACCESS_STEPS 4
+#define MAX_BTF_DUMP_BYTES 4092
+#define BTF_DUMP_SK_BUFF (1u << 0)
+#define BTF_DUMP_SHARED_INFO (1u << 1)
+#define BTF_RECORD_COMPONENT_MAP (1u << 0)
+#define BTF_RECORD_COMPONENT_METADATA (1u << 1)
 #define FILTER_COMPARE_EQUAL 1
 #define FILTER_COMPARE_NOT_EQUAL 2
 #define FILTER_COMPARE_LESS 3
@@ -210,6 +215,22 @@ struct skbx_map_metadata_trace_event {
     struct skbx_metadata metadata;
 };
 
+struct skbx_btf_dumps {
+    __s64 skb_result;
+    __s64 shared_info_result;
+    __u8 requested;
+    __u8 _pad[7];
+    char skb[MAX_BTF_DUMP_BYTES];
+    char shared_info[MAX_BTF_DUMP_BYTES];
+};
+
+struct skbx_btf_trace_event {
+    struct skbx_map_metadata_trace_event record;
+    struct skbx_btf_dumps dumps;
+    __u8 components;
+    __u8 _pad[7];
+};
+
 _Static_assert(sizeof(struct skbx_trace_event) == 224,
                "base trace record ABI changed");
 _Static_assert(sizeof(struct skbx_map_trace_event) == 320,
@@ -220,6 +241,10 @@ _Static_assert(sizeof(struct skbx_metadata_trace_event) == 264,
                "metadata trace record ABI changed");
 _Static_assert(sizeof(struct skbx_map_metadata_trace_event) == 360,
                "map metadata trace record ABI changed");
+_Static_assert(sizeof(struct skbx_btf_dumps) == 8208,
+               "BTF dump ABI changed");
+_Static_assert(sizeof(struct skbx_btf_trace_event) == 8576,
+               "BTF trace record ABI changed");
 
 struct kernel_stats {
     __u64 reserve_failures;
@@ -266,6 +291,8 @@ struct skbx_config {
     struct metadata_access metadata[MAX_METADATA_PROJECTIONS];
     __u32 scalar_filter_count;
     struct scalar_filter_condition scalar_filters[MAX_METADATA_PROJECTIONS];
+    __u32 output_skb_dump;
+    __u32 output_shared_info_dump;
 };
 
 const volatile struct skbx_config CONFIG = {};
@@ -274,6 +301,13 @@ struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 8 * 1024 * 1024);
 } events SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct skbx_btf_trace_event);
+} btf_scratch SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -1155,6 +1189,53 @@ static __always_inline void fill_metadata(struct sk_buff *skb,
         counters->read_failures++;
 }
 
+static __always_inline void fill_btf_dumps(struct sk_buff *skb,
+                                           struct skbx_btf_dumps *dumps,
+                                           struct kernel_stats *counters)
+{
+    struct btf_ptr pointer = {};
+    int failed = 0;
+
+    dumps->requested = 0;
+    dumps->skb_result = 0;
+    dumps->shared_info_result = 0;
+    if (CONFIG.output_skb_dump) {
+        dumps->requested |= BTF_DUMP_SK_BUFF;
+        pointer.ptr = skb;
+        pointer.type_id = bpf_core_type_id_kernel(struct sk_buff);
+        dumps->skb_result =
+            bpf_snprintf_btf(dumps->skb, sizeof(dumps->skb), &pointer,
+                             sizeof(pointer), 0);
+        if (dumps->skb_result < 0)
+            failed = 1;
+    }
+    if (CONFIG.output_shared_info_dump) {
+        void *head = 0;
+        __u32 end = 0;
+
+        dumps->requested |= BTF_DUMP_SHARED_INFO;
+        if (!skb ||
+            bpf_core_read(&head, sizeof(head), &skb->head) ||
+            bpf_core_read(&end, sizeof(end), &skb->end) ||
+            !head) {
+            dumps->shared_info_result = -14;
+            failed = 1;
+        } else {
+            pointer.ptr = head + end;
+            pointer.type_id =
+                bpf_core_type_id_kernel(struct skb_shared_info);
+            dumps->shared_info_result =
+                bpf_snprintf_btf(dumps->shared_info,
+                                 sizeof(dumps->shared_info), &pointer,
+                                 sizeof(pointer), 0);
+            if (dumps->shared_info_result < 0)
+                failed = 1;
+        }
+    }
+    if (failed && counters)
+        counters->read_failures++;
+}
+
 static __always_inline int trace_skb_associated(struct pt_regs *ctx,
                                                 struct sk_buff *skb,
                                                 __u8 association)
@@ -1175,6 +1256,30 @@ static __always_inline int trace_skb_associated(struct pt_regs *ctx,
     }
     if (association == ASSOCIATION_DIRECT && CONFIG.track_stack)
         associate_stack(ctx, skb);
+    if (CONFIG.output_skb_dump || CONFIG.output_shared_info_dump) {
+        __u32 key = 0;
+        struct skbx_btf_trace_event *record =
+            bpf_map_lookup_elem(&btf_scratch, &key);
+
+        if (!record) {
+            if (counters)
+                counters->reserve_failures++;
+            return 0;
+        }
+        __builtin_memset(&record->record, 0, sizeof(record->record));
+        record->components = 0;
+        fill_trace_event(ctx, skb, association, match, identity,
+                         &record->record.map.event, counters);
+        if (CONFIG.metadata_count) {
+            fill_metadata(skb, &record->record.metadata, counters);
+            record->components |= BTF_RECORD_COMPONENT_METADATA;
+        }
+        fill_btf_dumps(skb, &record->dumps, counters);
+        if (bpf_ringbuf_output(&events, record, sizeof(*record), 0) &&
+            counters)
+            counters->reserve_failures++;
+        return 0;
+    }
     if (CONFIG.metadata_count) {
         struct skbx_metadata_trace_event *record =
             bpf_ringbuf_reserve(&events, sizeof(*record), 0);
@@ -1301,6 +1406,34 @@ static __always_inline int trace_map_associated(struct pt_regs *ctx,
             identity = *tracked_identity;
     }
 
+    if (CONFIG.output_skb_dump || CONFIG.output_shared_info_dump) {
+        __u32 key = 0;
+        struct skbx_btf_trace_event *record =
+            bpf_map_lookup_elem(&btf_scratch, &key);
+
+        if (!record) {
+            if (counters)
+                counters->reserve_failures++;
+            return 0;
+        }
+        __builtin_memset(&record->record, 0, sizeof(record->record));
+        record->components = BTF_RECORD_COMPONENT_MAP;
+        fill_trace_event(ctx, (struct sk_buff *)*skb_addr,
+                         ASSOCIATION_STACK, MATCH_FILTER, identity,
+                         &record->record.map.event, counters);
+        fill_map_operation(ctx, operation, &record->record.map, counters);
+        if (CONFIG.metadata_count) {
+            fill_metadata((struct sk_buff *)*skb_addr,
+                          &record->record.metadata, counters);
+            record->components |= BTF_RECORD_COMPONENT_METADATA;
+        }
+        fill_btf_dumps((struct sk_buff *)*skb_addr, &record->dumps,
+                       counters);
+        if (bpf_ringbuf_output(&events, record, sizeof(*record), 0) &&
+            counters)
+            counters->reserve_failures++;
+        return 0;
+    }
     if (CONFIG.metadata_count) {
         struct skbx_map_metadata_trace_event *record =
             bpf_ringbuf_reserve(&events, sizeof(*record), 0);

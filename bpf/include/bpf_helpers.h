@@ -20,7 +20,12 @@ static __u64 (*bpf_get_current_pid_tgid)(void) = (void *)14;
 static long (*bpf_get_current_comm)(void *buf, __u32 size) = (void *)16;
 static long (*bpf_get_stackid)(void *ctx, void *map, __u64 flags) = (void *)27;
 static long (*bpf_probe_read_kernel)(void *dst, __u32 size, const void *src) = (void *)113;
+static long (*bpf_ringbuf_output)(void *ringbuf, void *data,
+                                  __u64 size, __u64 flags) = (void *)130;
 static void *(*bpf_ringbuf_reserve)(void *ringbuf, __u64 size, __u64 flags) = (void *)131;
 static void (*bpf_ringbuf_submit)(void *data, __u64 flags) = (void *)132;
+static long (*bpf_snprintf_btf)(char *str, __u32 str_size,
+                                struct btf_ptr *ptr, __u32 ptr_size,
+                                __u64 flags) = (void *)149;
 
 #endif

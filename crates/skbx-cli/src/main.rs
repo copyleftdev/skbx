@@ -2,15 +2,15 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use nix::sched::{CloneFlags, setns};
 use skbx_contract::{
-    BpfMapOperation, BpfMapOperationKind, CONTRACT_VERSION, CaptureEnd, CaptureFilters,
+    BpfMapOperation, BpfMapOperationKind, BtfDump, CONTRACT_VERSION, CaptureEnd, CaptureFilters,
     CaptureLimits, CaptureStart, Describe, Envelope, EventAssociation, FunctionRef, MatchOrigin,
     MetadataEncoding, MetadataScalar, MetadataValue, PacketMeta, PacketTuple, PresentedTimestamp,
     Reliability, StopReason, TimestampMode, TraceEvent,
 };
 use skbx_core::{
     BoundedMap, DEFAULT_BTF_PATH, DropReasonTable, SymbolTable, build_probe_plan_with_bpf_helpers,
-    capture_id, discover_bpf_helpers, doctor, event_handle, explain_with_context, replay,
-    resolve_skb_filter, resolve_skb_metadata,
+    capture_id, discover_bpf_helpers, doctor, ensure_btf_dump_support, event_handle,
+    explain_with_context, replay, resolve_skb_filter, resolve_skb_metadata,
 };
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
@@ -143,6 +143,12 @@ enum Command {
         /// Emit up to four BTF-validated scalar paths such as skb->mark.
         #[arg(long = "output-skb-metadata")]
         output_skb_metadata: Vec<String>,
+        /// Emit a bounded BTF rendering of struct sk_buff with each event.
+        #[arg(long)]
+        output_skb: bool,
+        /// Emit a bounded BTF rendering of struct skb_shared_info with each event.
+        #[arg(long = "output-skb-shared-info")]
+        output_skb_shared_info: bool,
         /// Probe attachment backend; auto falls back to individual kprobes.
         #[arg(long, value_enum, default_value_t = AttachmentBackend::Auto)]
         backend: AttachmentBackend,
@@ -347,6 +353,8 @@ fn run(cli: Cli) -> Result<u8> {
             output_stack,
             output_tunnel,
             output_skb_metadata,
+            output_skb,
+            output_skb_shared_info,
             backend,
             timestamp,
             duration,
@@ -379,6 +387,8 @@ fn run(cli: Cli) -> Result<u8> {
             output_stack,
             output_tunnel,
             &output_skb_metadata,
+            output_skb,
+            output_skb_shared_info,
             backend,
             timestamp,
             duration,
@@ -507,6 +517,8 @@ fn capture(
     output_stack: bool,
     output_tunnel: bool,
     output_skb_metadata: &[String],
+    output_skb: bool,
+    output_skb_shared_info: bool,
     backend: AttachmentBackend,
     timestamp: TimestampOutput,
     duration_seconds: u64,
@@ -553,6 +565,9 @@ fn capture(
     }
     let metadata_projections = resolve_skb_metadata(output_skb_metadata, kernel_btf)?;
     let scalar_filter = resolve_skb_filter(filter_skb_expr, kernel_btf)?;
+    if output_skb || output_skb_shared_info {
+        ensure_btf_dump_support(kernel_btf.unwrap_or_else(|| Path::new(DEFAULT_BTF_PATH)))?;
+    }
     let mut filters = resolve_filters(filter_mark, filter_ifindex, filter_ifname, filter_netns)?;
     filters.pcap = (!pcap_filter.is_empty()).then(|| pcap_filter.join(" "));
     filters.tunnel_pcap_l2 = filter_tunnel_pcap_l2.map(str::to_owned);
@@ -651,6 +666,14 @@ fn capture(
                 .iter()
                 .map(|projection| projection.descriptor.clone())
                 .collect(),
+            btf_dump_types: [
+                output_skb.then_some("sk_buff"),
+                output_skb_shared_info.then_some("skb_shared_info"),
+            ]
+            .into_iter()
+            .flatten()
+            .map(str::to_owned)
+            .collect(),
             segment: None,
             filters: filters.clone(),
             limits: CaptureLimits {
@@ -735,6 +758,8 @@ fn capture(
                         }
                     })
             }),
+            output_skb_dump: u32::from(output_skb),
+            output_shared_info_dump: u32::from(output_skb_shared_info),
         };
         let mut sensor = skbx_sensor::LiveSensor::attach(
             &attachments,
@@ -802,7 +827,7 @@ fn capture(
                     stop_reason = StopReason::EventLimit;
                     break;
                 }
-                let (raw, map, metadata) = observation.into_parts();
+                let (raw, map, metadata, btf_dumps) = observation.into_parts();
                 let stack = sensor.stack_frames(raw.stack_id);
                 let mut event = convert_event(
                     &id,
@@ -810,6 +835,7 @@ fn capture(
                     raw,
                     map,
                     metadata,
+                    btf_dumps,
                     EventEnrichment {
                         metadata_projections: &metadata_projections,
                         symbols: &symbols,
@@ -1078,6 +1104,7 @@ fn convert_event(
     raw: skbx_sensor::RawTraceEvent,
     raw_map: Option<skbx_sensor::RawMapTraceEvent>,
     raw_metadata: Option<skbx_sensor::RawMetadata>,
+    raw_btf_dumps: Option<skbx_sensor::RawBtfDumps>,
     enrichment: EventEnrichment<'_>,
 ) -> TraceEvent {
     let function_symbol = enrichment
@@ -1141,6 +1168,7 @@ fn convert_event(
         drop_reason,
         bpf_map: raw_map.map(convert_bpf_map),
         metadata: convert_metadata(raw_metadata, enrichment.metadata_projections),
+        btf_dumps: convert_btf_dumps(raw_btf_dumps),
         packet: PacketMeta {
             len: raw.len,
             protocol: u16::from_be(raw.protocol),
@@ -1155,6 +1183,53 @@ fn convert_event(
         tuple: packet_tuple(&raw.tuple),
         tunnel_tuple: packet_tuple(&raw.tunnel_tuple),
     }
+}
+
+fn convert_btf_dumps(raw: Option<skbx_sensor::RawBtfDumps>) -> Vec<BtfDump> {
+    let Some(raw) = raw else {
+        return Vec::new();
+    };
+    [
+        (
+            skbx_sensor::BTF_DUMP_SK_BUFF,
+            "sk_buff",
+            raw.skb_result,
+            &raw.skb[..],
+        ),
+        (
+            skbx_sensor::BTF_DUMP_SHARED_INFO,
+            "skb_shared_info",
+            raw.shared_info_result,
+            &raw.shared_info[..],
+        ),
+    ]
+    .into_iter()
+    .filter(|(flag, _, _, _)| raw.requested & flag != 0)
+    .map(|(_, type_name, result, bytes)| {
+        if result < 0 {
+            return BtfDump {
+                type_name: type_name.into(),
+                rendered: None,
+                bytes_required: 0,
+                bytes_captured: 0,
+                truncated: false,
+                read_error: Some(format!("kernel_error:{result}")),
+            };
+        }
+        let captured = bytes
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(bytes.len());
+        BtfDump {
+            type_name: type_name.into(),
+            rendered: Some(String::from_utf8_lossy(&bytes[..captured]).into_owned()),
+            bytes_required: result as u64,
+            bytes_captured: captured as u32,
+            truncated: result as usize >= bytes.len(),
+            read_error: None,
+        }
+    })
+    .collect()
 }
 
 fn convert_metadata(
@@ -1388,6 +1463,20 @@ fn write_event(writer: &mut impl Write, format: OutputFormat, event: &TraceEvent
                     function
                 )?;
             }
+            for dump in &event.btf_dumps {
+                writeln!(
+                    writer,
+                    "BTF {} captured={}/{} truncated={} error={}",
+                    dump.type_name,
+                    dump.bytes_captured,
+                    dump.bytes_required,
+                    dump.truncated,
+                    dump.read_error.as_deref().unwrap_or("none")
+                )?;
+                if let Some(rendered) = &dump.rendered {
+                    writeln!(writer, "{rendered}")?;
+                }
+            }
             Ok(())
         }
     }
@@ -1491,6 +1580,7 @@ mod tests {
             raw,
             None,
             None,
+            None,
             EventEnrichment {
                 metadata_projections: &[],
                 symbols: &symbols,
@@ -1502,6 +1592,7 @@ mod tests {
             "capture",
             0,
             raw,
+            None,
             None,
             None,
             EventEnrichment {
@@ -1534,6 +1625,7 @@ mod tests {
                 association: skbx_sensor::ASSOCIATION_STACK,
                 ..raw
             },
+            None,
             None,
             None,
             EventEnrichment {
@@ -1628,6 +1720,34 @@ mod tests {
     }
 
     #[test]
+    fn btf_dump_conversion_preserves_truncation_and_kernel_errors() {
+        let mut raw = skbx_sensor::RawBtfDumps {
+            skb_result: 5_000,
+            shared_info_result: -14,
+            requested: skbx_sensor::BTF_DUMP_SK_BUFF | skbx_sensor::BTF_DUMP_SHARED_INFO,
+            ..Default::default()
+        };
+        raw.skb[..skbx_sensor::MAX_BTF_DUMP_BYTES - 1].fill(b'x');
+        let dumps = convert_btf_dumps(Some(raw));
+
+        assert_eq!(dumps.len(), 2);
+        assert_eq!(dumps[0].type_name, "sk_buff");
+        assert_eq!(
+            dumps[0].bytes_captured,
+            (skbx_sensor::MAX_BTF_DUMP_BYTES - 1) as u32
+        );
+        assert_eq!(dumps[0].bytes_required, 5_000);
+        assert!(dumps[0].truncated);
+        assert_eq!(
+            dumps[0].rendered.as_ref().unwrap().len(),
+            skbx_sensor::MAX_BTF_DUMP_BYTES - 1
+        );
+        assert_eq!(dumps[1].type_name, "skb_shared_info");
+        assert_eq!(dumps[1].rendered, None);
+        assert_eq!(dumps[1].read_error.as_deref(), Some("kernel_error:-14"));
+    }
+
+    #[test]
     fn filter_parsing_matches_pwru_mark_semantics() {
         assert_eq!(parse_mark("0xa00/0xf00").unwrap(), (0xa00, 0xf00));
         assert_eq!(parse_mark("12").unwrap(), (12, u32::MAX));
@@ -1686,6 +1806,7 @@ mod tests {
             "capture",
             0,
             raw,
+            None,
             None,
             None,
             EventEnrichment {
