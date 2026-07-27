@@ -23,6 +23,7 @@ trap cleanup EXIT
 "${SKBX_BINARY}" capture \
     --probe consume_skb \
     --probe __kfree_skb \
+    --filter-track-skb-by-stackid \
     --filter-non-skb-funcs dst_release,kmem_cache_free \
     --duration 4 \
     --max-events 1024 \
@@ -50,7 +51,8 @@ CAPTURE_PID=
 # argument. kfree_skbmem subsequently removes the association before the SKB
 # allocation itself is returned to the slab.
 jq -s -e '
-    [.[] | select(.kind == "event")] as $events
+    (map(select(.kind == "capture_start"))[0].filters.track_stack == true)
+    and ([.[] | select(.kind == "event")] as $events
     | any(
         range(0; ($events | length) - 2) as $i
         | ($events[$i]) as $direct
@@ -67,7 +69,7 @@ jq -s -e '
         and ($direct.packet.read_errors | length) == 0
         and ($release.packet.read_errors | length) == 0
         and ($free.packet.read_errors | length) == 0
-    )
+    ))
 ' "${TRACE}" >/dev/null
 jq -e '
     select(

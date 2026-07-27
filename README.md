@@ -109,7 +109,8 @@ sudo skbx capture --filter-trace-xdp \
   --output-xdp-metadata 'xdp->rxq->dev->ifindex' \
   --output trace.jsonl icmp
 sudo skbx capture --probe ip_rcv --output trace.jsonl \
-  --output-max-bytes 104857600 --output-max-backups 4 --output-compress
+  --output-max-bytes 104857600 --output-max-backups 4 \
+  --output-max-age-days 7 --output-compress
 skbx replay trace.jsonl --format json
 skbx explain trace.jsonl event:<handle>
 ```

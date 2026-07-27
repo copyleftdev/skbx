@@ -134,6 +134,9 @@ enum Command {
         /// Keep following matching SKBs and their clone/copy descendants.
         #[arg(long)]
         filter_track_skb: bool,
+        /// Preserve stack-anchored SKB identity through logical free paths.
+        #[arg(long)]
+        filter_track_skb_by_stackid: bool,
         /// Apply a BTF-checked &&/|| scalar expression, bounded to four expanded comparisons.
         #[arg(long)]
         filter_skb_expr: Option<String>,
@@ -207,6 +210,9 @@ enum Command {
         /// Maximum rotated segments retained in addition to the active file.
         #[arg(long, default_value_t = 8)]
         output_max_backups: u32,
+        /// Delete rotated segments older than this many days (0 keeps them until count eviction).
+        #[arg(long, visible_alias = "output-file-max-age", default_value_t = 0)]
+        output_max_age_days: u32,
         /// Gzip rotated segments; the active segment remains plain JSONL.
         #[arg(long)]
         output_compress: bool,
@@ -412,6 +418,7 @@ fn run(cli: Cli) -> Result<u8> {
             filter_ifname,
             filter_netns,
             filter_track_skb,
+            filter_track_skb_by_stackid,
             filter_skb_expr,
             filter_xdp_expr,
             filter_tunnel_pcap_l2,
@@ -438,6 +445,7 @@ fn run(cli: Cli) -> Result<u8> {
             output,
             output_max_bytes,
             output_max_backups,
+            output_max_age_days,
             output_compress,
             ready_file,
             fail_on_loss,
@@ -457,6 +465,7 @@ fn run(cli: Cli) -> Result<u8> {
             filter_ifname.as_deref(),
             filter_netns.as_deref(),
             filter_track_skb,
+            filter_track_skb_by_stackid,
             filter_skb_expr.as_deref(),
             filter_xdp_expr.as_deref(),
             filter_tunnel_pcap_l2.as_deref(),
@@ -486,6 +495,7 @@ fn run(cli: Cli) -> Result<u8> {
             &output,
             output_max_bytes,
             output_max_backups,
+            output_max_age_days,
             output_compress,
             ready_file.as_deref(),
             fail_on_loss,
@@ -638,6 +648,7 @@ fn capture(
     filter_ifname: Option<&str>,
     filter_netns: Option<&str>,
     filter_track_skb: bool,
+    filter_track_skb_by_stackid: bool,
     filter_skb_expr: Option<&str>,
     filter_xdp_expr: Option<&str>,
     filter_tunnel_pcap_l2: Option<&str>,
@@ -658,6 +669,7 @@ fn capture(
     output_path: &Path,
     output_max_bytes: Option<u64>,
     output_max_backups: u32,
+    output_max_age_days: u32,
     output_compress: bool,
     ready_file: Option<&Path>,
     fail_on_loss: bool,
@@ -698,6 +710,9 @@ fn capture(
     }
     if output_max_bytes.is_some() && output_max_backups == 0 {
         bail!("--output-max-backups must be greater than zero when rotation is enabled");
+    }
+    if output_max_age_days != 0 && output_max_bytes.is_none() {
+        bail!("--output-max-age-days requires --output-max-bytes");
     }
     if output_compress && output_max_bytes.is_none() {
         bail!("--output-compress requires --output-max-bytes");
@@ -754,10 +769,11 @@ fn capture(
             all_modules,
         )?
     };
-    filters.track_stack = plan
-        .probes
-        .iter()
-        .any(|probe| probe.available && probe.skb_argument.is_none());
+    filters.track_stack = filter_track_skb_by_stackid
+        || plan
+            .probes
+            .iter()
+            .any(|probe| probe.available && probe.skb_argument.is_none());
     let attachments: Vec<_> = plan
         .probes
         .iter()
@@ -790,6 +806,7 @@ fn capture(
             output_path,
             output_max_bytes,
             output_max_backups,
+            output_max_age_days,
             output_compress,
             ready_file,
             fail_on_loss,
@@ -1007,6 +1024,7 @@ fn capture(
                 &start,
                 max_bytes,
                 output_max_backups,
+                output_max_age_days,
                 output_compress,
             )?))
         } else {
@@ -2054,6 +2072,30 @@ mod tests {
         assert!(output_tcp_flags);
         assert!(output_netns_names);
         assert_eq!(netns_names_max_length, 24);
+    }
+
+    #[test]
+    fn pwru_stack_and_rotation_age_controls_parse() {
+        let cli = Cli::try_parse_from([
+            "skbx",
+            "capture",
+            "--filter-track-skb-by-stackid",
+            "--output-max-bytes",
+            "65536",
+            "--output-file-max-age",
+            "7",
+        ])
+        .expect("parse stack and age controls");
+        let Command::Capture {
+            filter_track_skb_by_stackid,
+            output_max_age_days,
+            ..
+        } = cli.command
+        else {
+            panic!("expected capture command");
+        };
+        assert!(filter_track_skb_by_stackid);
+        assert_eq!(output_max_age_days, 7);
     }
 
     #[test]

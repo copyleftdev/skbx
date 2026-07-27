@@ -7,6 +7,7 @@ use skbx_contract::{
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 pub const MIN_ROTATION_BYTES: u64 = 64 * 1024;
 const FOOTER_RESERVE_BYTES: u64 = 1024;
@@ -14,12 +15,14 @@ const BUFFER_BYTES: usize = 256 * 1024;
 
 pub struct SegmentedTraceWriter {
     writer: BufWriter<FileRotate<AppendCount>>,
+    path: PathBuf,
     start: CaptureStart,
     max_bytes: u64,
     current_bytes: u64,
     segment_index: u32,
     segment_first_seq: u64,
     segment_events: u64,
+    max_age: Option<Duration>,
 }
 
 impl SegmentedTraceWriter {
@@ -28,6 +31,7 @@ impl SegmentedTraceWriter {
         start: &CaptureStart,
         max_bytes: u64,
         max_backups: u32,
+        max_age_days: u32,
         compress: bool,
     ) -> Result<Self> {
         if max_bytes < MIN_ROTATION_BYTES {
@@ -41,6 +45,9 @@ impl SegmentedTraceWriter {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create output directory {}", parent.display()))?;
         }
+        let max_age = (max_age_days != 0)
+            .then(|| Duration::from_secs(u64::from(max_age_days) * 24 * 60 * 60));
+        prune_expired_segments(&path, max_age)?;
         OpenOptions::new()
             .write(true)
             .create(true)
@@ -62,12 +69,14 @@ impl SegmentedTraceWriter {
         );
         let mut output = Self {
             writer: BufWriter::with_capacity(BUFFER_BYTES, rotation),
+            path,
             start: start.clone(),
             max_bytes,
             current_bytes: 0,
             segment_index: 0,
             segment_first_seq: 0,
             segment_events: 0,
+            max_age,
         };
         let header = output.header_bytes(0, 0)?;
         output.ensure_segment_capacity(header.len(), 0)?;
@@ -113,6 +122,7 @@ impl SegmentedTraceWriter {
                 .get_mut()
                 .rotate()
                 .context("rotate trace segment")?;
+            prune_expired_segments(&self.path, self.max_age)?;
             self.segment_index = next_index;
             self.segment_first_seq = event.seq;
             self.segment_events = 0;
@@ -206,6 +216,52 @@ fn normalized_path(path: &Path) -> PathBuf {
     }
 }
 
+fn prune_expired_segments(path: &Path, max_age: Option<Duration>) -> Result<()> {
+    let Some(max_age) = max_age else {
+        return Ok(());
+    };
+    let cutoff = SystemTime::now()
+        .checked_sub(max_age)
+        .context("rotation age exceeds the system clock range")?;
+    prune_segments_before(path, cutoff)
+}
+
+fn prune_segments_before(path: &Path, cutoff: SystemTime) -> Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .context("rotating output path has no file name")?
+        .to_string_lossy();
+    let prefix = format!("{file_name}.");
+    for entry in std::fs::read_dir(parent)
+        .with_context(|| format!("scan rotated segments in {}", parent.display()))?
+    {
+        let entry = entry.with_context(|| format!("read entry in {}", parent.display()))?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(suffix) = name.strip_prefix(&prefix) else {
+            continue;
+        };
+        let suffix = suffix.strip_suffix(".gz").unwrap_or(suffix);
+        if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) || suffix == "0" {
+            continue;
+        }
+        let metadata = entry
+            .metadata()
+            .with_context(|| format!("inspect rotated segment {}", entry.path().display()))?;
+        if metadata.is_file()
+            && metadata
+                .modified()
+                .with_context(|| format!("read mtime for {}", entry.path().display()))?
+                < cutoff
+        {
+            std::fs::remove_file(entry.path())
+                .with_context(|| format!("remove expired segment {}", entry.path().display()))?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,7 +347,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("trace.jsonl");
         let mut writer =
-            SegmentedTraceWriter::new(&path, &start(), MIN_ROTATION_BYTES, 2, false).unwrap();
+            SegmentedTraceWriter::new(&path, &start(), MIN_ROTATION_BYTES, 2, 0, false).unwrap();
         for seq in 0..10 {
             writer
                 .write_event(&event(seq, 22_000), || Ok(Reliability::default()))
@@ -322,7 +378,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("trace.jsonl");
         let mut writer =
-            SegmentedTraceWriter::new(&path, &start(), MIN_ROTATION_BYTES, 2, true).unwrap();
+            SegmentedTraceWriter::new(&path, &start(), MIN_ROTATION_BYTES, 2, 0, true).unwrap();
         for seq in 0..3 {
             writer
                 .write_event(&event(seq, 40_000), || Ok(Reliability::default()))
@@ -341,5 +397,22 @@ mod tests {
                 .is_ok()
         );
         assert!(skbx_core::replay(Cursor::new(std::fs::read(path).unwrap())).is_ok());
+    }
+
+    #[test]
+    fn age_pruning_targets_only_numeric_rotated_siblings() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("trace.jsonl");
+        std::fs::write(&path, b"active").unwrap();
+        std::fs::write(path.with_extension("jsonl.1"), b"old").unwrap();
+        std::fs::write(path.with_extension("jsonl.2.gz"), b"old").unwrap();
+        std::fs::write(path.with_extension("jsonl.backup"), b"unrelated").unwrap();
+
+        prune_segments_before(&path, SystemTime::now() + Duration::from_secs(1)).unwrap();
+
+        assert!(path.exists());
+        assert!(!path.with_extension("jsonl.1").exists());
+        assert!(!path.with_extension("jsonl.2.gz").exists());
+        assert!(path.with_extension("jsonl.backup").exists());
     }
 }

@@ -45,6 +45,7 @@ ip -n "${NS_B}" link set "${DEV_B}" up
     --max-events 400 \
     --output-max-bytes 65536 \
     --output-max-backups 2 \
+    --output-max-age-days 1 \
     --output-compress \
     --ready-file "${READY}" \
     --output "${TRACE}" &

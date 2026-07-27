@@ -186,7 +186,7 @@ impl Describe {
                     status: supported.clone(),
                     requires: "kernel frame pointers and bounded LRU maps",
                     cost: "up to 50 frame-pointer reads on selected probes",
-                    description: "associate explicitly requested non-SKB functions with packet evidence while labeling the inference source",
+                    description: "explicitly or automatically enable stack-ID lineage, associate requested non-SKB functions with packet evidence and label the inference source",
                 },
                 Capability {
                     name: "bpf-helper-tracing",
@@ -214,7 +214,7 @@ impl Describe {
                     status: supported.clone(),
                     requires: "target kernel BTF",
                     cost: "up to four bounded scalar reads per observed call",
-                    description: "normalize parenthesized &&/|| typed scalar expressions to at most four immutable comparisons with explicit read-failure telemetry",
+                    description: "cover pwru bice scalar semantics and normalize optional parenthesized &&/|| composition to at most four immutable comparisons with explicit read-failure telemetry",
                 },
                 Capability {
                     name: "atomic-btf-structure-dumps",
@@ -242,7 +242,7 @@ impl Describe {
                     status: supported.clone(),
                     requires: "JSONL file output",
                     cost: "one bounded serialization per event plus optional rotation-time gzip",
-                    description: "rotate only between envelopes, retain a bounded backup count and make every segment independently replayable",
+                    description: "rotate only between envelopes, enforce count/age retention and make every optionally compressed segment independently replayable",
                 },
                 Capability {
                     name: "tc-xdp-observation",
@@ -263,7 +263,7 @@ impl Describe {
                     status: supported.clone(),
                     requires: "target kernel BTF and XDP program tracing",
                     cost: "up to four bounded scalar reads per observed XDP entry",
-                    description: "normalize parenthesized &&/|| typed xdp_buff expressions to at most four immutable comparisons with explicit read-failure telemetry",
+                    description: "cover pwru bice xdp_buff scalar semantics and normalize optional parenthesized &&/|| composition to at most four immutable comparisons with explicit read-failure telemetry",
                 },
                 Capability {
                     name: "xdp-exit-action-evidence",
