@@ -195,7 +195,7 @@ silently presented as complete.
 On Ubuntu:
 
 ```console
-sudo apt-get install linux-tools-common clang llvm libelf-dev libpcap-dev pkg-config
+sudo apt-get install "linux-tools-$(uname -r)" clang llvm libelf-dev libpcap-dev pkg-config
 ```
 
 On Debian:

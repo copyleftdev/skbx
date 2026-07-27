@@ -17,10 +17,10 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install eBPF build prerequisites
-        run: sudo apt-get update && sudo apt-get install --yes linux-tools-common clang llvm libelf-dev libpcap-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install --yes "linux-tools-$(uname -r)" clang llvm libelf-dev libpcap-dev pkg-config
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
