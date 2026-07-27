@@ -42,7 +42,7 @@ coverage and a relevant live-kernel check exist.
 | Text output | partial | Stable text exists but does not mimic every pwru column |
 | JSON output | supported | Versioned append-only `traceq` JSONL |
 | Output event limit | supported | `--max-events`, bounded by default |
-| Rotating/compressed output files | missing | Add a maintained rolling-file sink |
+| Rotating/compressed output files | supported | Maintained `file-rotate`/`flate2` sink with exact byte/backup bounds, optional gzip and transparent gzip replay/explain; skbx rotates only after a complete footer and starts the next file with a matching header, so every retained segment replays independently; unit and live gates force rotation |
 | Ready file | supported | `--ready-file` removes stale state, then uses create-new only after links attach and the capture header is flushed |
 | Loss/recursion reporting | partial | Ring reserve/read/filter/decode/enrichment/output telemetry explicit; BPF recursion misses are not yet observable |
 | Deterministic replay | supported | Rootless, byte-stable summary |
@@ -64,6 +64,10 @@ coverage and a relevant live-kernel check exist.
   output before copying it into immutable eBPF configuration.
 - **iced-x86** is a focused MIT-licensed decoder used at startup to resolve
   direct call targets from bounded x86_64 BPF JIT byte ranges.
+- **file-rotate** and **flate2** are focused MIT-family rolling/gzip
+  components used for explicit segment moves, retention and streaming
+  compression; skbx owns traceq envelope boundaries and never delegates JSON
+  splitting to either crate.
 - Kernel hot-path logic remains small GPL-2.0 C compiled by Clang. No parsing,
   allocation, JSON encoding, or agent logic runs inside eBPF.
 

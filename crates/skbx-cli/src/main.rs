@@ -5,16 +5,16 @@ use skbx_contract::{
     BpfMapOperation, BpfMapOperationKind, CONTRACT_VERSION, CaptureEnd, CaptureFilters,
     CaptureLimits, CaptureStart, Describe, Envelope, EventAssociation, FunctionRef, MatchOrigin,
     MetadataEncoding, MetadataScalar, MetadataValue, PacketMeta, PacketTuple, PresentedTimestamp,
-    StopReason, TimestampMode, TraceEvent,
+    Reliability, StopReason, TimestampMode, TraceEvent,
 };
 use skbx_core::{
     BoundedMap, DEFAULT_BTF_PATH, DropReasonTable, SymbolTable, build_probe_plan_with_bpf_helpers,
-    capture_id, discover_bpf_helpers, doctor, event_handle, explain_file, replay,
+    capture_id, discover_bpf_helpers, doctor, event_handle, explain_with_context, replay,
     resolve_skb_metadata,
 };
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -25,6 +25,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 #[cfg(feature = "ebpf")]
 mod pcap_filter;
+mod segmented_output;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_DURATION_SECONDS: u64 = 10;
@@ -155,6 +156,15 @@ enum Command {
         format: OutputFormat,
         #[arg(long, default_value = "-")]
         output: PathBuf,
+        /// Rotate JSONL between complete envelopes at this many bytes (minimum 65536).
+        #[arg(long)]
+        output_max_bytes: Option<u64>,
+        /// Maximum rotated segments retained in addition to the active file.
+        #[arg(long, default_value_t = 8)]
+        output_max_backups: u32,
+        /// Gzip rotated segments; the active segment remains plain JSONL.
+        #[arg(long)]
+        output_compress: bool,
         /// Atomically create this file after every requested probe is attached.
         #[arg(long)]
         ready_file: Option<PathBuf>,
@@ -179,6 +189,11 @@ enum Command {
 enum OutputFormat {
     Jsonl,
     Text,
+}
+
+enum CaptureWriter {
+    Plain(BufWriter<Box<dyn Write>>),
+    Segmented(Box<segmented_output::SegmentedTraceWriter>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -335,6 +350,9 @@ fn run(cli: Cli) -> Result<u8> {
             route_cache_entries,
             format,
             output,
+            output_max_bytes,
+            output_max_backups,
+            output_compress,
             ready_file,
             fail_on_loss,
             pcap_filter,
@@ -363,15 +381,15 @@ fn run(cli: Cli) -> Result<u8> {
             route_cache_entries,
             format,
             &output,
+            output_max_bytes,
+            output_max_backups,
+            output_compress,
             ready_file.as_deref(),
             fail_on_loss,
             &pcap_filter,
         ),
         Command::Replay { input, format } => {
-            let reader = BufReader::new(
-                File::open(&input)
-                    .with_context(|| format!("open replay input {}", input.display()))?,
-            );
+            let reader = open_trace(&input)?;
             let summary = replay(reader)?;
             match format {
                 SummaryFormat::Json => write_pretty_stdout(&summary)?,
@@ -419,10 +437,27 @@ fn run(cli: Cli) -> Result<u8> {
             if !handle.starts_with("event:") {
                 bail!("explain handle must start with event:");
             }
-            let explanation = explain_file(&input, &handle)?;
+            let explanation =
+                explain_with_context(open_trace(&input)?, open_trace(&input)?, &handle)?;
             write_pretty_stdout(&explanation)?;
             Ok(0)
         }
+    }
+}
+
+fn open_trace(path: &Path) -> Result<Box<dyn BufRead>> {
+    let file = File::open(path).with_context(|| format!("open trace input {}", path.display()))?;
+    let mut buffered = BufReader::new(file);
+    let gzip = buffered
+        .fill_buf()
+        .with_context(|| format!("inspect trace input {}", path.display()))?
+        .starts_with(&[0x1f, 0x8b]);
+    if gzip {
+        Ok(Box::new(BufReader::new(flate2::read::GzDecoder::new(
+            buffered,
+        ))))
+    } else {
+        Ok(Box::new(buffered))
     }
 }
 
@@ -473,6 +508,9 @@ fn capture(
     route_cache_entries: u32,
     format: OutputFormat,
     output_path: &Path,
+    output_max_bytes: Option<u64>,
+    output_max_backups: u32,
+    output_compress: bool,
     ready_file: Option<&Path>,
     fail_on_loss: bool,
     pcap_filter: &[String],
@@ -485,6 +523,24 @@ fn capture(
     }
     if route_cache_entries == 0 {
         bail!("capture --route-cache-entries must be greater than zero");
+    }
+    if output_max_bytes.is_some() && output_path == Path::new("-") {
+        bail!("--output-max-bytes requires a file --output path");
+    }
+    if output_max_bytes.is_some_and(|bytes| bytes < segmented_output::MIN_ROTATION_BYTES) {
+        bail!(
+            "--output-max-bytes must be at least {}",
+            segmented_output::MIN_ROTATION_BYTES
+        );
+    }
+    if output_max_bytes.is_some() && format != OutputFormat::Jsonl {
+        bail!("--output-max-bytes currently requires --format jsonl");
+    }
+    if output_max_bytes.is_some() && output_max_backups == 0 {
+        bail!("--output-max-backups must be greater than zero when rotation is enabled");
+    }
+    if output_compress && output_max_bytes.is_none() {
+        bail!("--output-compress requires --output-max-bytes");
     }
     if let Some(path) = ready_file {
         prepare_ready_file(path)?;
@@ -549,6 +605,9 @@ fn capture(
             timestamp,
             format,
             output_path,
+            output_max_bytes,
+            output_max_backups,
+            output_compress,
             ready_file,
             fail_on_loss,
         );
@@ -583,6 +642,7 @@ fn capture(
                 .iter()
                 .map(|projection| projection.descriptor.clone())
                 .collect(),
+            segment: None,
             filters: filters.clone(),
             limits: CaptureLimits {
                 duration_seconds,
@@ -637,19 +697,30 @@ fn capture(
         )?;
         start.attachment_backend = sensor.attachment_backend().into();
         start.identity_hooks = sensor.identity_hooks().to_vec();
-        let output: Box<dyn Write> = if output_path == Path::new("-") {
-            Box::new(std::io::stdout())
+        let mut writer = if let Some(max_bytes) = output_max_bytes {
+            CaptureWriter::Segmented(Box::new(segmented_output::SegmentedTraceWriter::new(
+                output_path,
+                &start,
+                max_bytes,
+                output_max_backups,
+                output_compress,
+            )?))
         } else {
-            Box::new(
-                File::create(output_path)
-                    .with_context(|| format!("create output {}", output_path.display()))?,
-            )
+            let output: Box<dyn Write> = if output_path == Path::new("-") {
+                Box::new(std::io::stdout())
+            } else {
+                Box::new(
+                    File::create(output_path)
+                        .with_context(|| format!("create output {}", output_path.display()))?,
+                )
+            };
+            let mut writer = BufWriter::with_capacity(256 * 1024, output);
+            write_start(&mut writer, format, &start)?;
+            writer
+                .flush()
+                .context("flush capture header before readiness signal")?;
+            CaptureWriter::Plain(writer)
         };
-        let mut writer = BufWriter::with_capacity(256 * 1024, output);
-        write_start(&mut writer, format, &start)?;
-        writer
-            .flush()
-            .context("flush capture header before readiness signal")?;
         if let Some(path) = ready_file {
             signal_ready(path)?;
         }
@@ -659,6 +730,7 @@ fn capture(
             DropReasonTable::from_btf(kernel_btf.unwrap_or_else(|| Path::new(DEFAULT_BTF_PATH)));
         let deadline = Instant::now() + Duration::from_secs(duration_seconds);
         let mut last_skb_timestamps = BoundedMap::<String, u64>::new(route_cache_entries as usize);
+        let mut reliability_checkpoint = Reliability::default();
         let mut seq = 0_u64;
         let mut stop_reason = StopReason::Duration;
 
@@ -700,7 +772,20 @@ fn capture(
                     started_monotonic_ns,
                     &mut last_skb_timestamps,
                 )?;
-                write_event(&mut writer, format, &event)?;
+                match &mut writer {
+                    CaptureWriter::Plain(writer) => write_event(writer, format, &event)?,
+                    CaptureWriter::Segmented(writer) => {
+                        writer.write_event(&event, || {
+                            let current = sensor.stats()?.into_reliability(
+                                sensor.decode_failures(),
+                                sensor.enrichment_failures(),
+                            );
+                            let segment = reliability_delta(&current, &reliability_checkpoint);
+                            reliability_checkpoint = current;
+                            Ok(segment)
+                        })?;
+                    }
+                }
                 seq += 1;
             }
         }
@@ -716,9 +801,19 @@ fn capture(
             reliability,
             complete,
             stop_reason,
+            segment: None,
         };
-        write_end(&mut writer, format, &end)?;
-        writer.flush().context("flush capture output")?;
+        let final_segment_reliability =
+            reliability_delta(&end.reliability, &reliability_checkpoint);
+        match writer {
+            CaptureWriter::Plain(mut writer) => {
+                write_end(&mut writer, format, &end)?;
+                writer.flush().context("flush capture output")?;
+            }
+            CaptureWriter::Segmented(writer) => {
+                writer.finish(&end, final_segment_reliability)?;
+            }
+        }
 
         if fail_on_loss && !end.complete {
             Ok(3)
@@ -1115,6 +1210,29 @@ fn drop_reason_parameter(function: &str, raw: &skbx_sensor::RawTraceEvent) -> Op
         "kfree_skb_reason" => Some(raw.parameter_second),
         "sk_skb_reason_drop" => Some(raw.parameter_third),
         _ => None,
+    }
+}
+
+fn reliability_delta(current: &Reliability, previous: &Reliability) -> Reliability {
+    Reliability {
+        kernel_reserve_failures: current
+            .kernel_reserve_failures
+            .saturating_sub(previous.kernel_reserve_failures),
+        kernel_read_failures: current
+            .kernel_read_failures
+            .saturating_sub(previous.kernel_read_failures),
+        kernel_filtered_events: current
+            .kernel_filtered_events
+            .saturating_sub(previous.kernel_filtered_events),
+        userspace_decode_failures: current
+            .userspace_decode_failures
+            .saturating_sub(previous.userspace_decode_failures),
+        userspace_enrichment_failures: current
+            .userspace_enrichment_failures
+            .saturating_sub(previous.userspace_enrichment_failures),
+        output_failures: current
+            .output_failures
+            .saturating_sub(previous.output_failures),
     }
 }
 

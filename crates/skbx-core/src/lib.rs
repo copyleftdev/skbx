@@ -23,5 +23,5 @@ pub use plan::{
     DEFAULT_BTF_PATH, PlanError, build_probe_plan, build_probe_plan_with_bpf_helpers,
     build_probe_plan_with_non_skb,
 };
-pub use replay::{Explanation, ReplayError, explain, explain_file, replay};
+pub use replay::{Explanation, ReplayError, explain, explain_file, explain_with_context, replay};
 pub use symbols::SymbolTable;

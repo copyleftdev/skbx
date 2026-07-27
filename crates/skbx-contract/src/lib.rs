@@ -217,6 +217,13 @@ impl Describe {
                     description: "create an empty synchronization file only after every requested probe is attached",
                 },
                 Capability {
+                    name: "replay-safe-rolling-output",
+                    status: supported.clone(),
+                    requires: "JSONL file output",
+                    cost: "one bounded serialization per event plus optional rotation-time gzip",
+                    description: "rotate only between envelopes, retain a bounded backup count and make every segment independently replayable",
+                },
+                Capability {
                     name: "tc-xdp-observation",
                     status: planned,
                     requires: "dynamic BPF program links",
@@ -486,6 +493,8 @@ pub struct CaptureStart {
     #[serde(default)]
     pub metadata_projections: Vec<MetadataProjection>,
     #[serde(default)]
+    pub segment: Option<CaptureSegmentStart>,
+    #[serde(default)]
     pub filters: CaptureFilters,
     pub limits: CaptureLimits,
 }
@@ -511,6 +520,19 @@ pub struct CaptureLimits {
     pub duration_seconds: u64,
     pub max_events: u64,
     pub route_cache_entries: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaptureSegmentStart {
+    pub index: u32,
+    pub first_seq: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaptureSegmentEnd {
+    pub index: u32,
+    pub first_seq: u64,
+    pub next_seq: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -541,6 +563,7 @@ pub enum StopReason {
     EventLimit,
     Signal,
     SourceEnded,
+    Rotation,
     Error,
 }
 
@@ -552,6 +575,8 @@ pub struct CaptureEnd {
     pub reliability: Reliability,
     pub complete: bool,
     pub stop_reason: StopReason,
+    #[serde(default)]
+    pub segment: Option<CaptureSegmentEnd>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -569,6 +594,8 @@ pub enum Envelope {
 pub struct TraceSummary {
     pub schema: String,
     pub capture_id: String,
+    #[serde(default)]
+    pub segment: Option<CaptureSegmentStart>,
     pub complete: bool,
     pub events: u64,
     pub distinct_skbs: usize,
@@ -642,6 +669,12 @@ pub fn json_schema() -> serde_json::Value {
                         "type": "array",
                         "items": {"$ref": "#/$defs/MetadataProjection"},
                         "maxItems": 4
+                    },
+                    "segment": {
+                        "oneOf": [
+                            {"$ref": "#/$defs/CaptureSegmentStart"},
+                            {"type": "null"}
+                        ]
                     },
                     "filters": {"$ref": "#/$defs/CaptureFilters"},
                     "limits": {"$ref": "#/$defs/CaptureLimits"}
@@ -727,7 +760,13 @@ pub fn json_schema() -> serde_json::Value {
                     "events": {"type": "integer", "minimum": 0},
                     "reliability": {"$ref": "#/$defs/Reliability"},
                     "complete": {"type": "boolean"},
-                    "stop_reason": {"enum": ["duration", "event_limit", "signal", "source_ended", "error"]}
+                    "stop_reason": {"enum": ["duration", "event_limit", "signal", "source_ended", "rotation", "error"]},
+                    "segment": {
+                        "oneOf": [
+                            {"$ref": "#/$defs/CaptureSegmentEnd"},
+                            {"type": "null"}
+                        ]
+                    }
                 },
                 "additionalProperties": false
             },
@@ -738,6 +777,25 @@ pub fn json_schema() -> serde_json::Value {
                     "duration_seconds": {"type": "integer", "minimum": 1},
                     "max_events": {"type": "integer", "minimum": 1},
                     "route_cache_entries": {"type": "integer", "minimum": 1}
+                },
+                "additionalProperties": false
+            },
+            "CaptureSegmentStart": {
+                "type": "object",
+                "required": ["index", "first_seq"],
+                "properties": {
+                    "index": {"type": "integer", "minimum": 0},
+                    "first_seq": {"type": "integer", "minimum": 0}
+                },
+                "additionalProperties": false
+            },
+            "CaptureSegmentEnd": {
+                "type": "object",
+                "required": ["index", "first_seq", "next_seq"],
+                "properties": {
+                    "index": {"type": "integer", "minimum": 0},
+                    "first_seq": {"type": "integer", "minimum": 0},
+                    "next_seq": {"type": ["integer", "null"], "minimum": 0}
                 },
                 "additionalProperties": false
             },

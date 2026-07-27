@@ -2,7 +2,7 @@ use crate::{BoundedMap, route_handle};
 use serde::{Deserialize, Serialize};
 use skbx_contract::{
     CONTRACT_VERSION, CaptureEnd, CaptureStart, Envelope, MatchOrigin, Reliability, RouteConsensus,
-    RoutePattern, TraceEvent, TraceSummary,
+    RoutePattern, StopReason, TraceEvent, TraceSummary,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::BufRead;
@@ -104,9 +104,14 @@ pub fn replay<R: BufRead>(reader: R) -> Result<TraceSummary, ReplayError> {
                     ReplayError::Contract("event appeared before capture_start".into())
                 })?;
                 validate_event(&event, capture)?;
-                if event.seq != observed_events {
+                let first_seq = capture
+                    .segment
+                    .as_ref()
+                    .map_or(0, |segment| segment.first_seq);
+                let expected_seq = first_seq.saturating_add(observed_events);
+                if event.seq != expected_seq {
                     return Err(ReplayError::Contract(format!(
-                        "expected event seq {observed_events}, found {}",
+                        "expected event seq {expected_seq}, found {}",
                         event.seq
                     )));
                 }
@@ -205,6 +210,7 @@ pub fn replay<R: BufRead>(reader: R) -> Result<TraceSummary, ReplayError> {
                     end.events
                 )));
             }
+            validate_segment(&start, &end, observed_events)?;
             (end.complete, end.reliability, Some(end.stop_reason))
         }
         None => (false, Reliability::default(), None),
@@ -218,6 +224,7 @@ pub fn replay<R: BufRead>(reader: R) -> Result<TraceSummary, ReplayError> {
     Ok(TraceSummary {
         schema: format!("{CONTRACT_VERSION}/summary"),
         capture_id: start.capture_id,
+        segment: start.segment,
         complete,
         events: observed_events,
         distinct_skbs: skbs.len(),
@@ -229,6 +236,41 @@ pub fn replay<R: BufRead>(reader: R) -> Result<TraceSummary, ReplayError> {
         reliability,
         stop_reason,
     })
+}
+
+fn validate_segment(
+    start: &CaptureStart,
+    end: &CaptureEnd,
+    observed_events: u64,
+) -> Result<(), ReplayError> {
+    match (&start.segment, &end.segment) {
+        (None, None) => Ok(()),
+        (Some(start), Some(segment_end)) => {
+            if start.index != segment_end.index || start.first_seq != segment_end.first_seq {
+                return Err(ReplayError::Contract(
+                    "capture segment header/footer do not match".into(),
+                ));
+            }
+            let expected_next = start.first_seq.saturating_add(observed_events);
+            if segment_end
+                .next_seq
+                .is_some_and(|next| next != expected_next)
+            {
+                return Err(ReplayError::Contract(format!(
+                    "segment next_seq does not follow its events; expected {expected_next}"
+                )));
+            }
+            if segment_end.next_seq.is_some() != (end.stop_reason == StopReason::Rotation) {
+                return Err(ReplayError::Contract(
+                    "only rotated segments may declare next_seq".into(),
+                ));
+            }
+            Ok(())
+        }
+        _ => Err(ReplayError::Contract(
+            "capture segment metadata is missing from header or footer".into(),
+        )),
+    }
 }
 
 fn summarize_routes(
@@ -423,12 +465,22 @@ pub fn explain<R: BufRead>(reader: R, handle: &str) -> Result<Explanation, Repla
 /// Explain with a reopenable path, returning bounded same-SKB evidence.
 pub fn explain_file(path: &std::path::Path, handle: &str) -> Result<Explanation, ReplayError> {
     let first = std::io::BufReader::new(std::fs::File::open(path)?);
+    let second = std::io::BufReader::new(std::fs::File::open(path)?);
+    explain_with_context(first, second, handle)
+}
+
+/// Explain with two equivalent readers, preserving bounded same-SKB context
+/// for sources such as streaming decompression that cannot seek.
+pub fn explain_with_context<R1: BufRead, R2: BufRead>(
+    first: R1,
+    second: R2,
+    handle: &str,
+) -> Result<Explanation, ReplayError> {
     let mut explanation = explain(first, handle)?;
     let target_skb = event_identity(&explanation.target).to_owned();
     let mut evidence = Vec::new();
     let mut matching = 0_usize;
 
-    let second = std::io::BufReader::new(std::fs::File::open(path)?);
     for (index, line) in second.lines().enumerate() {
         let line = line?;
         if line.trim().is_empty() {
@@ -472,6 +524,7 @@ mod tests {
             timestamp_mode: "none".into(),
             output_tunnel: false,
             metadata_projections: Vec::new(),
+            segment: None,
             filters: Default::default(),
             limits: CaptureLimits {
                 duration_seconds: 1,
@@ -527,6 +580,7 @@ mod tests {
                     reliability: Reliability::default(),
                     complete: true,
                     stop_reason: StopReason::Duration,
+                    segment: None,
                 }))
                 .unwrap(),
             );
@@ -578,6 +632,7 @@ mod tests {
                 reliability: Reliability::default(),
                 complete: true,
                 stop_reason: StopReason::Duration,
+                segment: None,
             }))
             .unwrap(),
         );
@@ -630,6 +685,7 @@ mod tests {
             timestamp_mode: "none".into(),
             output_tunnel: false,
             metadata_projections: Vec::new(),
+            segment: None,
             filters: Default::default(),
             limits: CaptureLimits {
                 duration_seconds: 1,
@@ -686,6 +742,7 @@ mod tests {
             reliability: Reliability::default(),
             complete: true,
             stop_reason: StopReason::Duration,
+            segment: None,
         });
         serde_json::to_writer(&mut bytes, &end).unwrap();
         bytes.push(b'\n');

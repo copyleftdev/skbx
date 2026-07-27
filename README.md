@@ -56,8 +56,8 @@ resolved in the namespace selected by `--filter-netns`, and device-less
 output SKBs fall back to their socket namespace.
 
 It does **not yet** claim full `pwru` parity. Packet-byte/BTF dumps, TC/XDP
-program tracing, arbitrary SKB/XDP filter expressions, XDP metadata
-projections and rolling output remain explicit gaps.
+program tracing, arbitrary SKB/XDP filter expressions and XDP metadata
+projections remain explicit gaps.
 
 ## Commands
 
@@ -76,6 +76,8 @@ sudo skbx capture --probe ip_local_out --output-tunnel \
 sudo skbx capture --probe ip_rcv \
   --output-skb-metadata 'skb->mark' \
   --output-skb-metadata 'skb->dev->ifindex' --output trace.jsonl
+sudo skbx capture --probe ip_rcv --output trace.jsonl \
+  --output-max-bytes 104857600 --output-max-backups 4 --output-compress
 skbx replay trace.jsonl --format json
 skbx explain trace.jsonl event:<handle>
 ```
@@ -87,6 +89,11 @@ from a consensus or outlier directly back to the raw observations with
 `capture` is bounded to 10 seconds and 100,000 events unless explicitly
 overridden. Exit codes are stable: `0` success, `1` runtime failure, `2`
 usage error, `3` incomplete capture or reliability gate failure.
+
+Rotated output is JSONL-only and uses exact byte and backup ceilings. The
+active file is the newest segment; `.1`, `.2`, and so on are older, with
+optional `.gz`. Every retained segment has matching capture envelopes and can
+be replayed or explained on its own; input gzip is detected by magic bytes.
 
 ## Build
 
