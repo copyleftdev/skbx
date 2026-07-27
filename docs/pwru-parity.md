@@ -50,6 +50,29 @@ coverage and a relevant live-kernel check exist.
 | Evidence-handle lookup | supported | `event:<digest>` plus bounded same-SKB context |
 | Self-describing agent contract | supported | `describe`, JSON Schema and stable exit codes |
 
+## Audited control mapping
+
+Parity here means equivalent observation capability with explicit evidence,
+not byte-for-byte CLI compatibility. The remaining spelling/default
+differences are intentional and visible:
+
+| pwru control | skbx control or policy |
+|---|---|
+| `--kernel-btf`, `--kmods`, `--all-kmods`, `--filter-func`, `--filter-non-skb-funcs` | Same names and meanings; skbx also exposes a read-only `plan` command |
+| `--filter-netns`, `--filter-mark`, `--filter-ifname`, positional pcap filter, tunnel filters | Same names; skbx additionally accepts numeric `--filter-ifindex` |
+| `--filter-track-skb`, `--filter-track-skb-by-stackid`, `--filter-trace-tc`, `--filter-trace-xdp`, `--filter-track-bpf-helpers` | Same names and observation roles |
+| `--filter-skb-expr`, `--filter-xdp-expr` | Same bice scalar language plus bounded `&&`/`||` composition |
+| `--filter-kprobe-batch`, `--backend` | `--backend` supports `auto`, `kprobe`, and `kprobe-multi`; multi-probes attach each BTF signature group in one kernel operation, so skbx does not expose an individual-link concurrency tuning knob |
+| `--timestamp` and all `--output-meta`/tuple/netns/caller/CB/TCP/metadata/stack/tunnel/SKB controls | Same presentation controls; JSON evidence is never discarded by text-only suppression |
+| `--output-bpfmap` | Map arguments are emitted automatically when helper discovery identifies lookup/update/delete operations |
+| `--output-limit-lines` | `--max-events`; skbx requires a positive bound and also requires a finite `--duration` |
+| `--output-file`, `--output-file-max-size` | `--output` plus byte-exact `--output-max-bytes`; rotation occurs only when explicitly requested |
+| `--output-file-max-backups`, `--output-file-max-age`, `--output-file-compress` | `--output-max-backups`, `--output-max-age-days` (with `--output-file-max-age` alias), and `--output-compress`; retention is always bounded when rotation is enabled |
+| `--output-json` | `--format jsonl`, which is the default; `--format text` selects the human presentation |
+| `--ready-file` | Same name, with stale-file removal followed by create-new after attachment and header flush |
+| `--set-percpu-buf` | Fixed 4092-byte buffers per BTF type and atomic records; required/captured sizes and truncation are explicit instead of mutating a map ABI at runtime |
+| `--debug` | `doctor --json`, `plan --json`, startup warnings, and reliability footers provide structured diagnostics rather than an unstable debug-log contract |
+
 ## Dependency policy
 
 - **libbpf-rs** is the maintained Rust interface from the libbpf project and
