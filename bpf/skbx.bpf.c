@@ -328,6 +328,8 @@ struct skbx_config {
     struct metadata_access xdp_metadata[MAX_METADATA_PROJECTIONS];
     __u32 scalar_filter_count;
     struct scalar_filter_condition scalar_filters[MAX_METADATA_PROJECTIONS];
+    __u32 xdp_scalar_filter_count;
+    struct scalar_filter_condition xdp_scalar_filters[MAX_METADATA_PROJECTIONS];
     __u32 output_skb_dump;
     __u32 output_shared_info_dump;
     __u32 dynamic_program_id;
@@ -898,20 +900,22 @@ static __always_inline __s64 signed_scalar(__u64 value, __u8 size)
     }
 }
 
-static __always_inline int scalar_filter_match(struct sk_buff *skb)
+static __always_inline int scalar_filter_match(
+    void *root, __u32 count,
+    const volatile struct scalar_filter_condition *conditions)
 {
-    if (CONFIG.scalar_filter_count > MAX_METADATA_PROJECTIONS)
+    if (count > MAX_METADATA_PROJECTIONS)
         return -1;
 #pragma clang loop unroll(full)
     for (int index = 0; index < MAX_METADATA_PROJECTIONS; index++) {
         const volatile struct scalar_filter_condition *condition =
-            &CONFIG.scalar_filters[index];
+            &conditions[index];
         __u64 observed = 0;
         int matched;
 
-        if (index >= CONFIG.scalar_filter_count)
+        if (index >= count)
             break;
-        if (read_scalar_access(skb, &condition->access, &observed))
+        if (read_scalar_access(root, &condition->access, &observed))
             return -1;
         if (condition->is_signed) {
             __s64 left = signed_scalar(observed, condition->access.size);
@@ -987,7 +991,8 @@ static __always_inline int configured_filter_match(struct sk_buff *skb)
         goto filtered;
     if (!tunnel_pcap_filter_match(skb))
         goto filtered;
-    int scalar_match = scalar_filter_match(skb);
+    int scalar_match = scalar_filter_match(
+        skb, CONFIG.scalar_filter_count, CONFIG.scalar_filters);
     if (scalar_match < 0)
         return -1;
     if (!scalar_match)
@@ -1142,9 +1147,16 @@ static __always_inline int configured_xdp_filter_match(
     __u32 netns = 0;
 
     if (!CONFIG.filter_ifindex && !CONFIG.filter_netns &&
-        !CONFIG.pcap_l2.len)
+        !CONFIG.pcap_l2.len && !CONFIG.xdp_scalar_filter_count)
         return 1;
     if (!xdp || !xdp_filter_match(xdp))
+        goto filtered;
+    int scalar_match = scalar_filter_match(
+        xdp, CONFIG.xdp_scalar_filter_count,
+        CONFIG.xdp_scalar_filters);
+    if (scalar_match < 0)
+        return -1;
+    if (!scalar_match)
         goto filtered;
     if (!CONFIG.filter_ifindex && !CONFIG.filter_netns)
         return 1;

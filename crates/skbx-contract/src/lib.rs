@@ -253,6 +253,13 @@ impl Describe {
                     description: "resolve bounded xdp_buff field paths before attach and emit typed values with per-projection read errors",
                 },
                 Capability {
+                    name: "btf-checked-xdp-scalar-filter",
+                    status: supported.clone(),
+                    requires: "target kernel BTF and XDP program tracing",
+                    cost: "up to four bounded scalar reads per observed XDP entry",
+                    description: "compile up to four &&-joined typed xdp_buff comparisons into immutable access plans with explicit read-failure telemetry",
+                },
+                Capability {
                     name: "route-consensus-and-outliers",
                     status: supported.clone(),
                     requires: "traceq JSONL",
@@ -579,6 +586,8 @@ pub struct CaptureFilters {
     pub tunnel_pcap_l3: Option<String>,
     #[serde(default)]
     pub skb_expression: Option<String>,
+    #[serde(default)]
+    pub xdp_expression: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -900,7 +909,8 @@ pub fn json_schema() -> serde_json::Value {
                     "pcap": {"type": ["string", "null"]},
                     "tunnel_pcap_l2": {"type": ["string", "null"]},
                     "tunnel_pcap_l3": {"type": ["string", "null"]},
-                    "skb_expression": {"type": ["string", "null"]}
+                    "skb_expression": {"type": ["string", "null"]},
+                    "xdp_expression": {"type": ["string", "null"]}
                 },
                 "additionalProperties": false
             },
@@ -1127,6 +1137,9 @@ mod tests {
         assert!(describe.capabilities.iter().any(|c| {
             c.name == "btf-checked-xdp-metadata-projections"
                 && c.status == CapabilityStatus::Supported
+        }));
+        assert!(describe.capabilities.iter().any(|c| {
+            c.name == "btf-checked-xdp-scalar-filter" && c.status == CapabilityStatus::Supported
         }));
         assert_eq!(describe.defaults.max_events, 100_000);
     }

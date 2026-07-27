@@ -53,6 +53,7 @@ ip netns exec "${NS_B}" ip link set dev "${DEV_B}" \
     --filter-trace-xdp \
     --filter-netns "/var/run/netns/${NS_B}" \
     --filter-ifname "${DEV_B}" \
+    --filter-xdp-expr 'xdp->frame_sz >= 1 && xdp->rxq->dev->ifindex > 0' \
     --output-xdp-metadata 'xdp->frame_sz' \
     --output-xdp-metadata 'xdp->rxq->dev->ifindex' \
     --duration 4 \
@@ -86,6 +87,7 @@ jq -e '
         .name == "xdp_pass" and
         .entry == "xdp_pass"
     ) and
+    .filters.xdp_expression == "xdp->frame_sz >= 1 && xdp->rxq->dev->ifindex > 0" and
     [.metadata_projections[].expression] == [
         "xdp->frame_sz",
         "xdp->rxq->dev->ifindex"

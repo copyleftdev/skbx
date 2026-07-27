@@ -1,9 +1,14 @@
-use crate::{MetadataAccessPlan, MetadataError, resolve_skb_metadata};
+use crate::{
+    MetadataAccessPlan, MetadataError, ResolvedMetadataProjection, resolve_skb_metadata,
+    resolve_xdp_metadata,
+};
 use skbx_contract::MetadataEncoding;
 use std::path::Path;
 use thiserror::Error;
 
 pub const MAX_SKB_FILTER_CONDITIONS: usize = 4;
+type MetadataResolver =
+    fn(&[String], Option<&Path>) -> Result<Vec<ResolvedMetadataProjection>, MetadataError>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScalarComparison {
@@ -31,9 +36,9 @@ pub struct ResolvedSkbFilter {
 
 #[derive(Debug, Error)]
 pub enum SkbFilterError {
-    #[error("SKB filter supports at most {MAX_SKB_FILTER_CONDITIONS} &&-joined conditions")]
+    #[error("scalar filter supports at most {MAX_SKB_FILTER_CONDITIONS} &&-joined conditions")]
     TooMany,
-    #[error("invalid SKB filter expression {expression:?}: {reason}")]
+    #[error("invalid scalar filter expression {expression:?}: {reason}")]
     Invalid { expression: String, reason: String },
     #[error(transparent)]
     Metadata(#[from] MetadataError),
@@ -42,6 +47,21 @@ pub enum SkbFilterError {
 pub fn resolve_skb_filter(
     expression: Option<&str>,
     btf_path: Option<&Path>,
+) -> Result<Option<ResolvedSkbFilter>, SkbFilterError> {
+    resolve_scalar_filter(expression, btf_path, resolve_skb_metadata)
+}
+
+pub fn resolve_xdp_filter(
+    expression: Option<&str>,
+    btf_path: Option<&Path>,
+) -> Result<Option<ResolvedSkbFilter>, SkbFilterError> {
+    resolve_scalar_filter(expression, btf_path, resolve_xdp_metadata)
+}
+
+fn resolve_scalar_filter(
+    expression: Option<&str>,
+    btf_path: Option<&Path>,
+    resolve_metadata: MetadataResolver,
 ) -> Result<Option<ResolvedSkbFilter>, SkbFilterError> {
     let Some(source) = expression.filter(|value| !value.trim().is_empty()) else {
         return Ok(None);
@@ -65,7 +85,7 @@ pub fn resolve_skb_filter(
         .map(|clause| parse_clause(source, clause))
         .collect::<Result<_, _>>()?;
     let paths: Vec<String> = parsed.iter().map(|(path, _, _)| path.clone()).collect();
-    let projections = resolve_skb_metadata(&paths, btf_path)?;
+    let projections = resolve_metadata(&paths, btf_path)?;
     let mut conditions = Vec::with_capacity(parsed.len());
     for ((_, comparison, literal), projection) in parsed.into_iter().zip(projections) {
         let (value, signed) = parse_literal(
@@ -252,5 +272,22 @@ mod tests {
             None
         )
         .is_err());
+    }
+
+    #[test]
+    fn resolves_bounded_typed_xdp_predicates() {
+        let filter = resolve_xdp_filter(
+            Some("xdp->frame_sz >= 256 && xdp->rxq->dev->ifindex > 0"),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(filter.conditions.len(), 2);
+        assert_eq!(
+            filter.conditions[0].comparison,
+            ScalarComparison::GreaterOrEqual
+        );
+        assert_eq!(filter.conditions[0].value, 256);
+        assert!(filter.conditions[1].signed);
     }
 }

@@ -53,6 +53,8 @@ split BTF. It records:
   attached with one shared-map fentry tracer per program;
 - up to four target-BTF-validated `xdp->…` scalar projections alongside XDP
   packet length, interface, namespace, MTU, protocol and tuple evidence;
+- up to four `&&`-joined target-BTF-validated `xdp->…` scalar comparisons,
+  evaluated from a separate immutable XDP access plan;
 - caller, network namespace, MTU and the SKB control buffer;
 - BTF-decoded SKB drop reasons on supported drop functions;
 - kernel ring-buffer reserve failures.
@@ -94,6 +96,7 @@ sudo skbx capture --probe ip_rcv --output-skb \
 sudo skbx capture --filter-trace-tc \
   --output-skb-metadata 'skb->mark' --output trace.jsonl
 sudo skbx capture --filter-trace-xdp \
+  --filter-xdp-expr 'xdp->frame_sz >= 1' \
   --output-xdp-metadata 'xdp->frame_sz' \
   --output-xdp-metadata 'xdp->rxq->dev->ifindex' \
   --output trace.jsonl icmp

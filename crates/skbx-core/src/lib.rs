@@ -20,7 +20,7 @@ pub use drop_reason::DropReasonTable;
 pub use evidence::{capture_id, event_handle, route_handle};
 pub use filter::{
     MAX_SKB_FILTER_CONDITIONS, ResolvedSkbFilter, ResolvedSkbFilterCondition, ScalarComparison,
-    SkbFilterError, resolve_skb_filter,
+    SkbFilterError, resolve_skb_filter, resolve_xdp_filter,
 };
 pub use metadata::{
     MAX_METADATA_ACCESS_STEPS, MAX_METADATA_PROJECTIONS, MetadataAccessPlan, MetadataError,

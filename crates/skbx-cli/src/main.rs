@@ -12,7 +12,7 @@ use skbx_core::{
     BoundedMap, DEFAULT_BTF_PATH, DropReasonTable, SymbolTable, build_dynamic_probe_plan,
     build_probe_plan_with_bpf_helpers, capture_id, discover_bpf_helpers, doctor,
     ensure_btf_dump_support, event_handle, explain_with_context, replay, resolve_skb_filter,
-    resolve_skb_metadata, resolve_xdp_metadata,
+    resolve_skb_metadata, resolve_xdp_filter, resolve_xdp_metadata,
 };
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
@@ -136,6 +136,9 @@ enum Command {
         /// Apply up to four BTF-checked scalar comparisons joined with &&.
         #[arg(long)]
         filter_skb_expr: Option<String>,
+        /// Apply up to four xdp_buff BTF-checked scalar comparisons joined with &&.
+        #[arg(long)]
+        filter_xdp_expr: Option<String>,
         /// Apply a libpcap expression to the inner Ethernet frame when present.
         #[arg(long)]
         filter_tunnel_pcap_l2: Option<String>,
@@ -361,6 +364,7 @@ fn run(cli: Cli) -> Result<u8> {
             filter_netns,
             filter_track_skb,
             filter_skb_expr,
+            filter_xdp_expr,
             filter_tunnel_pcap_l2,
             filter_tunnel_pcap_l3,
             output_stack,
@@ -398,6 +402,7 @@ fn run(cli: Cli) -> Result<u8> {
             filter_netns.as_deref(),
             filter_track_skb,
             filter_skb_expr.as_deref(),
+            filter_xdp_expr.as_deref(),
             filter_tunnel_pcap_l2.as_deref(),
             filter_tunnel_pcap_l3.as_deref(),
             output_stack,
@@ -531,6 +536,7 @@ fn capture(
     filter_netns: Option<&str>,
     filter_track_skb: bool,
     filter_skb_expr: Option<&str>,
+    filter_xdp_expr: Option<&str>,
     filter_tunnel_pcap_l2: Option<&str>,
     filter_tunnel_pcap_l3: Option<&str>,
     output_stack: bool,
@@ -568,6 +574,9 @@ fn capture(
     if !output_xdp_metadata.is_empty() && !filter_trace_xdp {
         bail!("--output-xdp-metadata requires --filter-trace-xdp");
     }
+    if filter_xdp_expr.is_some() && !filter_trace_xdp {
+        bail!("--filter-xdp-expr requires --filter-trace-xdp");
+    }
     if output_max_bytes.is_some() && output_path == Path::new("-") {
         bail!("--output-max-bytes requires a file --output path");
     }
@@ -592,6 +601,7 @@ fn capture(
     let metadata_projections = resolve_skb_metadata(output_skb_metadata, kernel_btf)?;
     let xdp_metadata_projections = resolve_xdp_metadata(output_xdp_metadata, kernel_btf)?;
     let scalar_filter = resolve_skb_filter(filter_skb_expr, kernel_btf)?;
+    let xdp_scalar_filter = resolve_xdp_filter(filter_xdp_expr, kernel_btf)?;
     if output_skb || output_skb_shared_info {
         ensure_btf_dump_support(kernel_btf.unwrap_or_else(|| Path::new(DEFAULT_BTF_PATH)))?;
     }
@@ -601,6 +611,9 @@ fn capture(
     filters.tunnel_pcap_l3 = filter_tunnel_pcap_l3.map(str::to_owned);
     filters.track_skb = filter_track_skb;
     filters.skb_expression = scalar_filter.as_ref().map(|filter| filter.source.clone());
+    filters.xdp_expression = xdp_scalar_filter
+        .as_ref()
+        .map(|filter| filter.source.clone());
     if filter_track_skb
         && filters.mark_mask == 0
         && filters.ifindex == 0
@@ -609,6 +622,7 @@ fn capture(
         && filters.tunnel_pcap_l2.is_none()
         && filters.tunnel_pcap_l3.is_none()
         && filters.skb_expression.is_none()
+        && filters.xdp_expression.is_none()
     {
         bail!("--filter-track-skb requires at least one packet filter");
     }
@@ -773,6 +787,49 @@ fn capture(
                 .map_or(0, |filter| filter.conditions.len() as u32),
             scalar_filters: std::array::from_fn(|index| {
                 scalar_filter
+                    .as_ref()
+                    .and_then(|filter| filter.conditions.get(index))
+                    .map_or_else(skbx_sensor::ScalarFilterCondition::default, |condition| {
+                        skbx_sensor::ScalarFilterCondition {
+                            access: skbx_sensor::MetadataAccess {
+                                offsets: condition.access.offsets,
+                                dereference_mask: condition.access.dereference_mask,
+                                steps: condition.access.steps,
+                                size: condition.access.size,
+                                _pad: 0,
+                            },
+                            _pad0: [0; 4],
+                            value: condition.value,
+                            comparison: match condition.comparison {
+                                skbx_core::ScalarComparison::Equal => {
+                                    skbx_sensor::FILTER_COMPARE_EQUAL
+                                }
+                                skbx_core::ScalarComparison::NotEqual => {
+                                    skbx_sensor::FILTER_COMPARE_NOT_EQUAL
+                                }
+                                skbx_core::ScalarComparison::Less => {
+                                    skbx_sensor::FILTER_COMPARE_LESS
+                                }
+                                skbx_core::ScalarComparison::LessOrEqual => {
+                                    skbx_sensor::FILTER_COMPARE_LESS_OR_EQUAL
+                                }
+                                skbx_core::ScalarComparison::Greater => {
+                                    skbx_sensor::FILTER_COMPARE_GREATER
+                                }
+                                skbx_core::ScalarComparison::GreaterOrEqual => {
+                                    skbx_sensor::FILTER_COMPARE_GREATER_OR_EQUAL
+                                }
+                            },
+                            signed: u8::from(condition.signed),
+                            _pad1: [0; 6],
+                        }
+                    })
+            }),
+            xdp_scalar_filter_count: xdp_scalar_filter
+                .as_ref()
+                .map_or(0, |filter| filter.conditions.len() as u32),
+            xdp_scalar_filters: std::array::from_fn(|index| {
+                xdp_scalar_filter
                     .as_ref()
                     .and_then(|filter| filter.conditions.get(index))
                     .map_or_else(skbx_sensor::ScalarFilterCondition::default, |condition| {
@@ -1082,6 +1139,7 @@ fn resolve_filters(
         tunnel_pcap_l2: None,
         tunnel_pcap_l3: None,
         skb_expression: None,
+        xdp_expression: None,
     })
 }
 

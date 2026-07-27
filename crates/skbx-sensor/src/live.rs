@@ -98,6 +98,8 @@ pub struct SensorConfig {
     pub xdp_metadata: [MetadataAccess; crate::MAX_METADATA_PROJECTIONS],
     pub scalar_filter_count: u32,
     pub scalar_filters: [ScalarFilterCondition; crate::MAX_METADATA_PROJECTIONS],
+    pub xdp_scalar_filter_count: u32,
+    pub xdp_scalar_filters: [ScalarFilterCondition; crate::MAX_METADATA_PROJECTIONS],
     pub output_skb_dump: u32,
     pub output_shared_info_dump: u32,
     pub dynamic_program_id: u32,
