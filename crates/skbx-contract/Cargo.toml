@@ -4,7 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
+description = "Versioned evidence contracts for the skbx Linux packet-path observer"
+keywords = ["ebpf", "linux", "networking", "observability", "schema"]
+categories = ["network-programming", "development-tools::debugging"]
 
 [dependencies]
 serde.workspace = true

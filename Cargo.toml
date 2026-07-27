@@ -12,6 +12,7 @@ version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/copyleftdev/skbx"
+homepage = "https://copyleftdev.github.io/skbx/"
 rust-version = "1.85"
 
 [workspace.dependencies]
@@ -33,9 +34,9 @@ serde_json = "1.0.151"
 thiserror = "2.0.18"
 time = { version = "=0.3.45", features = ["formatting"] }
 
-skbx-contract = { path = "crates/skbx-contract" }
-skbx-core = { path = "crates/skbx-core" }
-skbx-sensor = { path = "crates/skbx-sensor" }
+skbx-contract = { version = "0.1.0", path = "crates/skbx-contract" }
+skbx-core = { version = "0.1.0", path = "crates/skbx-core" }
+skbx-sensor = { version = "0.1.0", path = "crates/skbx-sensor" }
 
 [profile.release]
 lto = "thin"

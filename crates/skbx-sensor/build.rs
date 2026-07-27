@@ -1,21 +1,17 @@
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    println!("cargo:rerun-if-changed=../../bpf/skbx.bpf.c");
-    println!("cargo:rerun-if-changed=../../bpf/include");
+    println!("cargo:rerun-if-changed=bpf/skbx.bpf.c");
+    println!("cargo:rerun-if-changed=bpf/include");
 
     if env::var_os("CARGO_FEATURE_EBPF").is_none() {
         return;
     }
 
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));
-    let root = manifest
-        .parent()
-        .and_then(Path::parent)
-        .expect("workspace root");
-    let bpf = root.join("bpf");
+    let bpf = manifest.join("bpf");
     let out = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
     let vmlinux = out.join("vmlinux.h");
     let object = out.join("skbx.bpf.o");
