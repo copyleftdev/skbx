@@ -70,9 +70,8 @@ filter, a tracked identity, or a stack association. Named interfaces are
 resolved in the namespace selected by `--filter-netns`, and device-less
 output SKBs fall back to their socket namespace.
 
-It does **not yet** claim full `pwru` parity. Unrestricted expression syntax,
-perfect text-column compatibility and universal XDP-to-SKB lineage across
-copying drivers remain explicit gaps.
+It does **not yet** claim full `pwru` parity. Unrestricted expression syntax
+and universal XDP-to-SKB lineage across copying drivers remain explicit gaps.
 
 ## Commands
 
@@ -86,7 +85,8 @@ sudo skbx capture --duration 10 --format jsonl --output trace.jsonl
 sudo skbx capture --probe tcp_v4_do_rcv --output-stack \
   --timestamp absolute --output trace.jsonl tcp port 443
 sudo skbx capture --probe tcp_v4_do_rcv --format text \
-  --timestamp relative --output -
+  --timestamp relative --output-caller --output-skb-cb \
+  --output-tcp-flags --output-netns-names --output -
 sudo skbx capture --probe ip_local_out --output-tunnel \
   --filter-tunnel-pcap-l2 'ether proto 0x0800' \
   --filter-tunnel-pcap-l3 'icmp' --output trace.jsonl udp port 4789
@@ -127,8 +127,12 @@ be replayed or explained on its own; input gzip is detected by magic bytes.
 
 Text capture uses stable pwru-shaped core columns for SKB, CPU/process/PID,
 timestamp, netns, mark, interface, protocol, MTU, length, tuple and function.
-Agent provenance remains visible as `ASSOC`/`ORIGIN`; caller, metadata, control
-buffer, tunnel, map, stack and BTF evidence use deterministic indented records.
+It supports pwru-compatible `--output-meta=false`, `--output-tuple=false`,
+`--output-caller`, `--output-skb-cb`, `--output-tcp-flags`,
+`--output-netns-names` and `--netns-names-max-length` presentation controls.
+Agent provenance remains visible as `ASSOC`/`ORIGIN`; metadata, control buffer,
+tunnel, map, stack and BTF evidence use deterministic indented records. JSON
+always retains the complete evidence regardless of text presentation flags.
 
 ## Build
 
@@ -179,6 +183,9 @@ proves that BTF-compiled scalar predicates reject unmarked traffic and retain
 marked traffic with matching projected values. `sudo
 scripts/live-btf-dump-test.sh target/debug/skbx` proves atomic `sk_buff` and
 shared-info renderings alongside an existing metadata projection. `sudo
+scripts/live-text-output-test.sh target/debug/skbx` proves named-namespace,
+caller, control-buffer and TCP-flag presentation plus metadata/tuple
+suppression in isolated expanded and compact text captures. `sudo
 scripts/live-tc-program-test.sh target/debug/skbx` loads an isolated TC
 classifier and proves BTF entry discovery, dynamic fentry attachment, exact
 program identity, read-clean SKB metadata and atomic `sk_buff` plus

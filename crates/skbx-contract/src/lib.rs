@@ -98,6 +98,13 @@ impl Describe {
                     description: "report kernel reserve/read/filter failures, exact-program recursion misses and userspace decode/enrichment/output failures",
                 },
                 Capability {
+                    name: "pwru-compatible-text-presentation",
+                    status: supported.clone(),
+                    requires: "text capture output",
+                    cost: "bounded userspace formatting only",
+                    description: "render pwru-shaped core columns with metadata/tuple suppression, caller, skb control-buffer, TCP-flag and bounded netns-name controls while retaining association provenance",
+                },
+                Capability {
                     name: "deterministic-replay",
                     status: supported.clone(),
                     requires: "traceq JSONL",

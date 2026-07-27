@@ -14,8 +14,9 @@ use skbx_core::{
     ensure_btf_dump_support, event_handle, explain_with_context, replay, resolve_skb_filter,
     resolve_skb_metadata, resolve_xdp_filter, resolve_xdp_metadata,
 };
+use std::collections::BTreeMap;
 use std::ffi::CString;
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::os::unix::fs::MetadataExt;
@@ -151,6 +152,27 @@ enum Command {
         /// Decode the inner IP tuple from SKBs carrying tunnel header offsets.
         #[arg(long)]
         output_tunnel: bool,
+        /// Print packet metadata columns in text output (use --output-meta=false to suppress).
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        output_meta: bool,
+        /// Print the L4 tuple column in text output (use --output-tuple=false to suppress).
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        output_tuple: bool,
+        /// Print the symbolic caller column in text output.
+        #[arg(long)]
+        output_caller: bool,
+        /// Print skb->cb as an indented text evidence record.
+        #[arg(long)]
+        output_skb_cb: bool,
+        /// Include decoded TCP flag bits in text tuples.
+        #[arg(long)]
+        output_tcp_flags: bool,
+        /// Print known network-namespace names in text output.
+        #[arg(long)]
+        output_netns_names: bool,
+        /// Maximum displayed network-namespace name length (minimum 10).
+        #[arg(long, default_value_t = 16)]
+        netns_names_max_length: u8,
         /// Emit up to four BTF-validated scalar paths such as skb->mark.
         #[arg(long = "output-skb-metadata")]
         output_skb_metadata: Vec<String>,
@@ -217,6 +239,33 @@ enum OutputFormat {
 enum CaptureWriter {
     Plain(BufWriter<Box<dyn Write>>),
     Segmented(Box<segmented_output::SegmentedTraceWriter>),
+}
+
+#[derive(Clone, Debug)]
+struct TextOutputOptions {
+    meta: bool,
+    tuple: bool,
+    caller: bool,
+    skb_cb: bool,
+    tcp_flags: bool,
+    netns_names_enabled: bool,
+    netns_names_max_length: usize,
+    netns_names: BTreeMap<u32, String>,
+}
+
+impl Default for TextOutputOptions {
+    fn default() -> Self {
+        Self {
+            meta: true,
+            tuple: true,
+            caller: false,
+            skb_cb: false,
+            tcp_flags: false,
+            netns_names_enabled: false,
+            netns_names_max_length: 16,
+            netns_names: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -369,6 +418,13 @@ fn run(cli: Cli) -> Result<u8> {
             filter_tunnel_pcap_l3,
             output_stack,
             output_tunnel,
+            output_meta,
+            output_tuple,
+            output_caller,
+            output_skb_cb,
+            output_tcp_flags,
+            output_netns_names,
+            netns_names_max_length,
             output_skb_metadata,
             output_xdp_metadata,
             output_skb,
@@ -407,6 +463,16 @@ fn run(cli: Cli) -> Result<u8> {
             filter_tunnel_pcap_l3.as_deref(),
             output_stack,
             output_tunnel,
+            TextOutputOptions {
+                meta: output_meta,
+                tuple: output_tuple,
+                caller: output_caller,
+                skb_cb: output_skb_cb,
+                tcp_flags: output_tcp_flags,
+                netns_names_enabled: output_netns_names,
+                netns_names_max_length: usize::from(netns_names_max_length),
+                netns_names: discover_netns_names(output_netns_names),
+            },
             &output_skb_metadata,
             &output_xdp_metadata,
             output_skb,
@@ -520,6 +586,42 @@ fn resolve_bpf_helpers(enabled: bool) -> Result<Vec<String>> {
     Ok(discovery.helpers)
 }
 
+fn discover_netns_names(enabled: bool) -> BTreeMap<u32, String> {
+    if !enabled {
+        return BTreeMap::new();
+    }
+    let mut names = BTreeMap::new();
+    for (path, name) in [
+        (Path::new("/proc/self/ns/net"), "current"),
+        (Path::new("/proc/1/ns/net"), "host"),
+    ] {
+        if let Ok(metadata) = fs::metadata(path)
+            && let Ok(inode) = u32::try_from(metadata.ino())
+        {
+            names.insert(inode, name.into());
+        }
+    }
+
+    let mut named_paths = fs::read_dir("/var/run/netns")
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    named_paths.sort();
+    for path in named_paths {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if let Ok(metadata) = fs::metadata(&path)
+            && let Ok(inode) = u32::try_from(metadata.ino())
+        {
+            names.insert(inode, name.into());
+        }
+    }
+    names
+}
+
 #[allow(clippy::too_many_arguments)]
 fn capture(
     requested: &[String],
@@ -542,6 +644,7 @@ fn capture(
     filter_tunnel_pcap_l3: Option<&str>,
     output_stack: bool,
     output_tunnel: bool,
+    text_output: TextOutputOptions,
     output_skb_metadata: &[String],
     output_xdp_metadata: &[String],
     output_skb: bool,
@@ -568,6 +671,9 @@ fn capture(
     }
     if route_cache_entries == 0 {
         bail!("capture --route-cache-entries must be greater than zero");
+    }
+    if text_output.netns_names_max_length < 10 {
+        bail!("--netns-names-max-length must be at least 10");
     }
     if filter_trace_xdp && (output_skb || output_skb_shared_info) {
         bail!("XDP program contexts do not contain sk_buff structures to dump");
@@ -913,7 +1019,7 @@ fn capture(
                 )
             };
             let mut writer = BufWriter::with_capacity(256 * 1024, output);
-            write_start(&mut writer, format, &start)?;
+            write_start(&mut writer, format, &start, &text_output)?;
             writer
                 .flush()
                 .context("flush capture header before readiness signal")?;
@@ -976,7 +1082,9 @@ fn capture(
                     &mut last_skb_timestamps,
                 )?;
                 match &mut writer {
-                    CaptureWriter::Plain(writer) => write_event(writer, format, &event)?,
+                    CaptureWriter::Plain(writer) => {
+                        write_event(writer, format, &event, &text_output)?
+                    }
                     CaptureWriter::Segmented(writer) => {
                         writer.write_event(&event, || {
                             let current = sensor.stats()?.into_reliability(
@@ -1579,7 +1687,12 @@ fn packet_tuple(raw: &skbx_sensor::RawPacketTuple) -> Option<PacketTuple> {
     })
 }
 
-fn write_start(writer: &mut impl Write, format: OutputFormat, start: &CaptureStart) -> Result<()> {
+fn write_start(
+    writer: &mut impl Write,
+    format: OutputFormat,
+    start: &CaptureStart,
+    text: &TextOutputOptions,
+) -> Result<()> {
     match format {
         OutputFormat::Jsonl => write_envelope(writer, &Envelope::CaptureStart(start.clone())),
         OutputFormat::Text => {
@@ -1590,50 +1703,48 @@ fn write_start(writer: &mut impl Write, format: OutputFormat, start: &CaptureSta
                 start.kernel_release,
                 start.probes.join(",")
             )?;
-            if start.timestamp_mode == "none" {
-                writeln!(
+            if start.timestamp_mode != "none" {
+                write!(writer, "{:<30} ", "TIME")?;
+            }
+            write!(
+                writer,
+                "{:<18} {:<5} {:<16} {:<8}",
+                "SKB", "CPU", "PROCESS", "PID"
+            )?;
+            if text.meta {
+                write!(
                     writer,
-                    "{:<18} {:<5} {:<16} {:<8} {:<10} {:<10} {:<8} {:<6} {:<5} {:<7} {:<38} {:<7} {:<13} FUNCTION",
-                    "SKB",
-                    "CPU",
-                    "PROCESS",
-                    "PID",
-                    "NETNS",
-                    "MARK/x",
-                    "IFACE",
-                    "PROTO",
-                    "MTU",
-                    "LEN",
-                    "TUPLE",
-                    "ASSOC",
-                    "ORIGIN"
-                )?;
-            } else {
-                writeln!(
-                    writer,
-                    "{:<30} {:<18} {:<5} {:<16} {:<8} {:<10} {:<10} {:<8} {:<6} {:<5} {:<7} {:<38} {:<7} {:<13} FUNCTION",
-                    "TIME",
-                    "SKB",
-                    "CPU",
-                    "PROCESS",
-                    "PID",
-                    "NETNS",
-                    "MARK/x",
-                    "IFACE",
-                    "PROTO",
-                    "MTU",
-                    "LEN",
-                    "TUPLE",
-                    "ASSOC",
-                    "ORIGIN"
+                    " {:<10} {:<10} {:<8} {:<6} {:<5} {:<7}",
+                    "NETNS", "MARK/x", "IFACE", "PROTO", "MTU", "LEN"
                 )?;
             }
+            if text.netns_names_enabled {
+                write!(
+                    writer,
+                    " {:<width$}",
+                    "NETNS NAME",
+                    width = text.netns_names_max_length
+                )?;
+            }
+            if text.tuple {
+                write!(writer, " {:<38}", "TUPLE")?;
+            }
+            write!(writer, " {:<7} {:<13} FUNCTION", "ASSOC", "ORIGIN")?;
+            if text.caller {
+                write!(writer, " CALLER")?;
+            }
+            writeln!(writer)?;
             Ok(())
         }
     }
 }
 
-fn write_event(writer: &mut impl Write, format: OutputFormat, event: &TraceEvent) -> Result<()> {
+fn write_event(
+    writer: &mut impl Write,
+    format: OutputFormat,
+    event: &TraceEvent,
+    text: &TextOutputOptions,
+) -> Result<()> {
     match format {
         OutputFormat::Jsonl => write_envelope(writer, &Envelope::Event(event.clone())),
         OutputFormat::Text => {
@@ -1647,57 +1758,58 @@ fn write_event(writer: &mut impl Write, format: OutputFormat, event: &TraceEvent
                 MatchOrigin::TrackedXdp => "tracked_xdp",
                 MatchOrigin::StackAssociation => "stack",
             };
-            let tuple = event
-                .tuple
-                .as_ref()
-                .map_or_else(|| "-".into(), format_packet_tuple);
             let mut function = event_display_name(event);
             if let Some(reason) = &event.drop_reason {
                 function.push_str(&format!("({reason})"));
             }
             if let Some(timestamp) = &event.presentation_timestamp {
-                writeln!(
+                write!(writer, "{:<30} ", timestamp.display)?;
+            }
+            write!(
+                writer,
+                "{:<18} {:<5} {:<16} {:<8}",
+                event.skb, event.cpu, event.command, event.pid
+            )?;
+            if text.meta {
+                write!(
                     writer,
-                    "{:<30} {:<18} {:<5} {:<16} {:<8} {:<10} {:<10x} {:<8} 0x{:04x} {:<5} {:<7} {:<38} {:<7} {:<13} {}",
-                    timestamp.display,
-                    event.skb,
-                    event.cpu,
-                    event.command,
-                    event.pid,
+                    " {:<10} {:<10x} {:<8} 0x{:04x} {:<5} {:<7}",
                     event.packet.netns,
                     event.packet.mark,
                     event.packet.ifindex,
                     event.packet.protocol,
                     event.packet.mtu,
-                    event.packet.len,
-                    tuple,
-                    association,
-                    origin,
-                    &function
+                    event.packet.len
                 )?;
-            } else {
-                writeln!(
+            }
+            if text.netns_names_enabled {
+                let name = text
+                    .netns_names
+                    .get(&event.packet.netns)
+                    .map_or("-", String::as_str);
+                write!(
                     writer,
-                    "{:<18} {:<5} {:<16} {:<8} {:<10} {:<10x} {:<8} 0x{:04x} {:<5} {:<7} {:<38} {:<7} {:<13} {}",
-                    event.skb,
-                    event.cpu,
-                    event.command,
-                    event.pid,
-                    event.packet.netns,
-                    event.packet.mark,
-                    event.packet.ifindex,
-                    event.packet.protocol,
-                    event.packet.mtu,
-                    event.packet.len,
-                    tuple,
-                    association,
-                    origin,
-                    &function
+                    " {:<width$}",
+                    truncate_chars(name, text.netns_names_max_length),
+                    width = text.netns_names_max_length
                 )?;
             }
-            if let Some(caller) = &event.caller {
-                writeln!(writer, "  CALLER {}", display_function(caller))?;
+            if text.tuple {
+                let tuple = event.tuple.as_ref().map_or_else(
+                    || "-".into(),
+                    |tuple| format_packet_tuple(tuple, text.tcp_flags),
+                );
+                write!(writer, " {:<38}", tuple)?;
             }
+            write!(writer, " {:<7} {:<13} {}", association, origin, &function)?;
+            if text.caller {
+                let caller = event
+                    .caller
+                    .as_ref()
+                    .map_or_else(|| "-".into(), display_function);
+                write!(writer, " {caller}")?;
+            }
+            writeln!(writer)?;
             for metadata in &event.metadata {
                 let value = metadata
                     .value
@@ -1712,7 +1824,7 @@ fn write_event(writer: &mut impl Write, format: OutputFormat, event: &TraceEvent
                     metadata.read_error.as_deref().unwrap_or("none")
                 )?;
             }
-            if event.packet.control_buffer.iter().any(|value| *value != 0) {
+            if text.skb_cb {
                 writeln!(
                     writer,
                     "  CB [{}]",
@@ -1726,7 +1838,11 @@ fn write_event(writer: &mut impl Write, format: OutputFormat, event: &TraceEvent
                 )?;
             }
             if let Some(tunnel) = &event.tunnel_tuple {
-                writeln!(writer, "  TUNNEL {}", format_packet_tuple(tunnel))?;
+                writeln!(
+                    writer,
+                    "  TUNNEL {}",
+                    format_packet_tuple(tunnel, text.tcp_flags)
+                )?;
             }
             if let Some(map) = &event.bpf_map {
                 writeln!(
@@ -1782,11 +1898,18 @@ fn format_metadata_scalar(value: &MetadataScalar) -> String {
     }
 }
 
-fn format_packet_tuple(tuple: &PacketTuple) -> String {
+fn truncate_chars(value: &str, maximum: usize) -> String {
+    value.chars().take(maximum).collect()
+}
+
+fn format_packet_tuple(tuple: &PacketTuple, output_tcp_flags: bool) -> String {
     let source = format_tuple_endpoint(&tuple.source, tuple.source_port);
     let destination = format_tuple_endpoint(&tuple.destination, tuple.destination_port);
     let protocol = match tuple.l4_protocol {
-        6 => format!("tcp:0x{:02x}", tuple.tcp_flags),
+        6 if output_tcp_flags && tuple.tcp_flags != 0 => {
+            format!("tcp:0x{:02x}", tuple.tcp_flags)
+        }
+        6 => "tcp".into(),
         17 => "udp".into(),
         1 => format!(
             "icmp:{}/{}",
@@ -1897,6 +2020,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pwru_text_presentation_flags_parse_explicit_booleans() {
+        let cli = Cli::try_parse_from([
+            "skbx",
+            "capture",
+            "--output-meta=false",
+            "--output-tuple=false",
+            "--output-caller",
+            "--output-skb-cb",
+            "--output-tcp-flags",
+            "--output-netns-names",
+            "--netns-names-max-length",
+            "24",
+        ])
+        .expect("parse text presentation flags");
+        let Command::Capture {
+            output_meta,
+            output_tuple,
+            output_caller,
+            output_skb_cb,
+            output_tcp_flags,
+            output_netns_names,
+            netns_names_max_length,
+            ..
+        } = cli.command
+        else {
+            panic!("expected capture command");
+        };
+        assert!(!output_meta);
+        assert!(!output_tuple);
+        assert!(output_caller);
+        assert!(output_skb_cb);
+        assert!(output_tcp_flags);
+        assert!(output_netns_names);
+        assert_eq!(netns_names_max_length, 24);
+    }
+
+    #[test]
     fn xdp_actions_are_named_without_losing_unknown_codes() {
         assert_eq!(convert_xdp_action(2).name, "XDP_PASS");
         assert_eq!(
@@ -2001,7 +2161,18 @@ mod tests {
             },
         );
         let mut output = Vec::new();
-        write_event(&mut output, OutputFormat::Text, &event).expect("write text event");
+        write_event(
+            &mut output,
+            OutputFormat::Text,
+            &event,
+            &TextOutputOptions {
+                caller: true,
+                skb_cb: true,
+                tcp_flags: true,
+                ..TextOutputOptions::default()
+            },
+        )
+        .expect("write text event");
         let output = String::from_utf8(output).expect("UTF-8 text event");
 
         assert!(output.contains("0x1234"));
@@ -2013,7 +2184,43 @@ mod tests {
         assert!(output.contains("direct"));
         assert!(output.contains("filter"));
         assert!(output.contains("ip_rcv"));
-        assert!(output.contains("CALLER ip_rcv_finish"));
+        assert!(output.contains("ip_rcv_finish"));
+        assert!(output.contains("  CB ["));
+
+        let mut default_output = Vec::new();
+        write_event(
+            &mut default_output,
+            OutputFormat::Text,
+            &event,
+            &TextOutputOptions::default(),
+        )
+        .expect("write default text event");
+        let default_output = String::from_utf8(default_output).expect("UTF-8 default text event");
+        assert!(!default_output.contains("ip_rcv_finish"));
+        assert!(!default_output.contains("  CB ["));
+        assert!(default_output.contains("(tcp)"));
+        assert!(!default_output.contains("tcp:0x12"));
+
+        let mut names = BTreeMap::new();
+        names.insert(4026532000, "long-namespace-name".into());
+        let mut compact_output = Vec::new();
+        write_event(
+            &mut compact_output,
+            OutputFormat::Text,
+            &event,
+            &TextOutputOptions {
+                meta: false,
+                tuple: false,
+                netns_names_enabled: true,
+                netns_names_max_length: 10,
+                netns_names: names,
+                ..TextOutputOptions::default()
+            },
+        )
+        .expect("write compact text event");
+        let compact_output = String::from_utf8(compact_output).expect("UTF-8 compact text event");
+        assert!(compact_output.contains("long-names"));
+        assert!(!compact_output.contains("10.0.0.1"));
     }
 
     #[test]
