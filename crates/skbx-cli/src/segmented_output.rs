@@ -267,6 +267,7 @@ mod tests {
             btf_dumps: Vec::new(),
             bpf_program: None,
             bpf_program_phase: None,
+            bpf_program_action: None,
             packet: PacketMeta::default(),
             tuple: None,
             tunnel_tuple: None,

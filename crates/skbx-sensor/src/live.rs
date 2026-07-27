@@ -520,7 +520,9 @@ impl LiveSensor {
         if trace_xdp {
             for (link, program) in attach_xdp_programs(&object, btf_path, config)? {
                 links.push(link);
-                bpf_programs.push(program);
+                if !bpf_programs.contains(&program) {
+                    bpf_programs.push(program);
+                }
             }
             if !bpf_programs
                 .iter()
@@ -708,7 +710,7 @@ fn attach_xdp_programs(
     btf_path: Option<&Path>,
     config: &SensorConfig,
 ) -> Result<Vec<(Link, BpfProgramRef)>, LiveError> {
-    attach_dynamic_programs(
+    let mut attached = attach_dynamic_programs(
         base,
         btf_path,
         config,
@@ -717,7 +719,18 @@ fn attach_xdp_programs(
         crate::BPF_PROGRAM_XDP,
         BpfProgramKind::Xdp,
         "XDP",
-    )
+    )?;
+    attached.extend(attach_dynamic_programs(
+        base,
+        btf_path,
+        config,
+        ProgramType::Xdp,
+        "skbx_trace_xdp_exit",
+        crate::BPF_PROGRAM_XDP,
+        BpfProgramKind::Xdp,
+        "XDP exit",
+    )?);
+    Ok(attached)
 }
 
 #[allow(clippy::too_many_arguments)]

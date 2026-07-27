@@ -63,6 +63,7 @@
 #define BPF_PROGRAM_TC 1
 #define BPF_PROGRAM_XDP 2
 #define BPF_PROGRAM_PHASE_ENTRY 1
+#define BPF_PROGRAM_PHASE_EXIT 2
 #define FILTER_COMPARE_EQUAL 1
 #define FILTER_COMPARE_NOT_EQUAL 2
 #define FILTER_COMPARE_LESS 3
@@ -387,6 +388,25 @@ struct {
     __type(key, __u64);
     __type(value, __u64);
 } skb_data_lineages SEC(".maps");
+
+struct xdp_entry_key {
+    __u64 context;
+    __u32 program_id;
+    __u32 _pad;
+};
+
+struct xdp_entry_value {
+    __u64 identity;
+    __u8 match;
+    __u8 _pad[7];
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 4096);
+    __type(key, struct xdp_entry_key);
+    __type(value, struct xdp_entry_value);
+} xdp_entry_states SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -1584,11 +1604,11 @@ DEFINE_SKB_PROBE(4)
 DEFINE_SKB_PROBE(5)
 
 static __always_inline void fill_program_ref(
-    struct skbx_bpf_program *program)
+    struct skbx_bpf_program *program, __u8 phase)
 {
     program->id = CONFIG.dynamic_program_id;
     program->kind = CONFIG.dynamic_program_kind;
-    program->phase = BPF_PROGRAM_PHASE_ENTRY;
+    program->phase = phase;
 #pragma unroll
     for (int i = 0; i < sizeof(program->name); i++)
         program->name[i] = CONFIG.dynamic_program_name[i];
@@ -1618,7 +1638,7 @@ static __always_inline void fill_program_trace_event(
     if (CONFIG.output_stack)
         record->event.stack_id = bpf_get_stackid(ctx, &stack_traces, 0);
     fill_skb_fields(skb, &record->event, counters);
-    fill_program_ref(&record->program);
+    fill_program_ref(&record->program, BPF_PROGRAM_PHASE_ENTRY);
 }
 
 SEC("fentry")
@@ -1663,7 +1683,7 @@ int skbx_trace_tc(__u64 *ctx)
 static __always_inline void fill_xdp_program_trace_event(
     void *ctx, struct xdp_buff *xdp, int match, __u64 identity,
     struct skbx_program_trace_event *record,
-    struct kernel_stats *counters)
+    struct kernel_stats *counters, __u8 phase)
 {
     __builtin_memset(record, 0, sizeof(*record));
     record->event.stack_id = -1;
@@ -1680,7 +1700,7 @@ static __always_inline void fill_xdp_program_trace_event(
     if (CONFIG.output_stack)
         record->event.stack_id = bpf_get_stackid(ctx, &stack_traces, 0);
     fill_xdp_fields(xdp, &record->event, counters);
-    fill_program_ref(&record->program);
+    fill_program_ref(&record->program, phase);
 }
 
 SEC("fentry")
@@ -1690,9 +1710,18 @@ int skbx_trace_xdp(__u64 *ctx)
     struct kernel_stats *counters = stats();
     __u64 identity = (__u64)xdp;
     int match = should_trace_xdp(xdp, counters, &identity);
+    struct xdp_entry_key key = {
+        .context = (__u64)xdp,
+        .program_id = CONFIG.dynamic_program_id,
+    };
+    struct xdp_entry_value state = {
+        .identity = identity,
+        .match = match,
+    };
 
     if (!match)
         return 0;
+    bpf_map_update_elem(&xdp_entry_states, &key, &state, 0);
     if (CONFIG.xdp_metadata_count) {
         struct skbx_program_metadata_trace_event *record =
             bpf_ringbuf_reserve(&events, sizeof(*record), 0);
@@ -1703,7 +1732,8 @@ int skbx_trace_xdp(__u64 *ctx)
             return 0;
         }
         fill_xdp_program_trace_event(ctx, xdp, match, identity,
-                                     &record->program, counters);
+                                     &record->program, counters,
+                                     BPF_PROGRAM_PHASE_ENTRY);
         fill_xdp_metadata(xdp, &record->metadata, counters);
         bpf_ringbuf_submit(record, 0);
     } else {
@@ -1716,7 +1746,61 @@ int skbx_trace_xdp(__u64 *ctx)
             return 0;
         }
         fill_xdp_program_trace_event(ctx, xdp, match, identity,
-                                     record, counters);
+                                     record, counters,
+                                     BPF_PROGRAM_PHASE_ENTRY);
+        bpf_ringbuf_submit(record, 0);
+    }
+    return 0;
+}
+
+SEC("fexit")
+int skbx_trace_xdp_exit(__u64 *ctx)
+{
+    struct xdp_buff *xdp = (struct xdp_buff *)ctx[0];
+    struct kernel_stats *counters = stats();
+    struct xdp_entry_key key = {
+        .context = (__u64)xdp,
+        .program_id = CONFIG.dynamic_program_id,
+    };
+    struct xdp_entry_value *state =
+        bpf_map_lookup_elem(&xdp_entry_states, &key);
+    __u64 identity;
+    __u8 match;
+
+    if (!state)
+        return 0;
+    identity = state->identity;
+    match = state->match;
+    bpf_map_delete_elem(&xdp_entry_states, &key);
+
+    if (CONFIG.xdp_metadata_count) {
+        struct skbx_program_metadata_trace_event *record =
+            bpf_ringbuf_reserve(&events, sizeof(*record), 0);
+
+        if (!record) {
+            if (counters)
+                counters->reserve_failures++;
+            return 0;
+        }
+        fill_xdp_program_trace_event(ctx, xdp, match, identity,
+                                     &record->program, counters,
+                                     BPF_PROGRAM_PHASE_EXIT);
+        record->program.event.parameter_second = ctx[1];
+        fill_xdp_metadata(xdp, &record->metadata, counters);
+        bpf_ringbuf_submit(record, 0);
+    } else {
+        struct skbx_program_trace_event *record =
+            bpf_ringbuf_reserve(&events, sizeof(*record), 0);
+
+        if (!record) {
+            if (counters)
+                counters->reserve_failures++;
+            return 0;
+        }
+        fill_xdp_program_trace_event(ctx, xdp, match, identity,
+                                     record, counters,
+                                     BPF_PROGRAM_PHASE_EXIT);
+        record->event.parameter_second = ctx[1];
         bpf_ringbuf_submit(record, 0);
     }
     return 0;

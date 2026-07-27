@@ -55,6 +55,9 @@ split BTF. It records:
   packet length, interface, namespace, MTU, protocol and tuple evidence;
 - up to four `&&`-joined target-BTF-validated `xdp->…` scalar comparisons,
   evaluated from a separate immutable XDP access plan;
+- matched XDP entry/exit pairs correlated through bounded shared state, with
+  the exact numeric return code decoded as `XDP_ABORTED`, `XDP_DROP`,
+  `XDP_PASS`, `XDP_TX` or `XDP_REDIRECT` while retaining unknown codes;
 - caller, network namespace, MTU and the SKB control buffer;
 - BTF-decoded SKB drop reasons on supported drop functions;
 - kernel ring-buffer reserve failures.
@@ -67,9 +70,9 @@ filter, a tracked identity, or a stack association. Named interfaces are
 resolved in the namespace selected by `--filter-netns`, and device-less
 output SKBs fall back to their socket namespace.
 
-It does **not yet** claim full `pwru` parity. Dynamic program exit/action
-evidence, TC/XDP structure dumps, unrestricted expression syntax and universal
-XDP-to-SKB lineage across copying drivers remain explicit gaps.
+It does **not yet** claim full `pwru` parity. TC/XDP structure dumps,
+unrestricted expression syntax and universal XDP-to-SKB lineage across copying
+drivers remain explicit gaps.
 
 ## Commands
 
@@ -172,8 +175,9 @@ scripts/live-tc-program-test.sh target/debug/skbx` loads an isolated TC
 classifier and proves BTF entry discovery, dynamic fentry attachment, exact
 program identity and read-clean SKB metadata. `sudo
 scripts/live-xdp-program-test.sh target/debug/skbx` proves dynamic-only XDP
-attachment with exact entry-phase identity, L2 pcap filtering, tuple decoding
-and target-BTF-checked `xdp_buff` metadata.
+attachment with exact paired entry/exit identity, decoded `XDP_PASS` action,
+L2 pcap filtering, tuple decoding and target-BTF-checked `xdp_buff` filters and
+metadata.
 
 ## Architecture
 

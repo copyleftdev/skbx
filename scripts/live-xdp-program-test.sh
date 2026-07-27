@@ -94,12 +94,35 @@ jq -e '
     ]
 ' "${TRACE}" >/dev/null
 
+jq -s -e '
+    [.[] | select(.kind == "event")] as $events |
+    any(
+        range(0; ($events | length) - 1) as $i |
+        ($events[$i]) as $entry |
+        ($events[$i + 1]) as $exit |
+        $entry.bpf_program.kind == "xdp" and
+        $entry.bpf_program_phase == "entry" and
+        $exit.bpf_program == $entry.bpf_program and
+        $exit.bpf_program_phase == "exit" and
+        $exit.bpf_program_action.code == 2 and
+        $exit.bpf_program_action.name == "XDP_PASS" and
+        $exit.skb == $entry.skb and
+        $exit.identity == $entry.identity and
+        ($exit.metadata | length) == 2 and
+        ($exit.metadata | all(.read_error == null)) and
+        ($exit.packet.read_errors | length) == 0
+    )
+' "${TRACE}" >/dev/null
+
 jq -e '
-    select(.kind == "event" and .bpf_program.kind == "xdp") |
+    select(
+        .kind == "event" and
+        .bpf_program.kind == "xdp" and
+        .bpf_program_phase == "entry"
+    ) |
     .bpf_program.id > 0 and
     .bpf_program.name == "xdp_pass" and
     .bpf_program.entry == "xdp_pass" and
-    .bpf_program_phase == "entry" and
     .function.address == "0x0" and
     .association == "direct" and
     .packet.protocol == 2048 and

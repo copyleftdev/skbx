@@ -2,11 +2,11 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use nix::sched::{CloneFlags, setns};
 use skbx_contract::{
-    BpfMapOperation, BpfMapOperationKind, BpfProgramKind, BpfProgramPhase, BpfProgramRef, BtfDump,
-    CONTRACT_VERSION, CaptureEnd, CaptureFilters, CaptureLimits, CaptureStart, Describe, Envelope,
-    EventAssociation, FunctionRef, MatchOrigin, MetadataEncoding, MetadataScalar, MetadataValue,
-    PacketMeta, PacketTuple, PresentedTimestamp, Reliability, StopReason, TimestampMode,
-    TraceEvent,
+    BpfMapOperation, BpfMapOperationKind, BpfProgramAction, BpfProgramKind, BpfProgramPhase,
+    BpfProgramRef, BtfDump, CONTRACT_VERSION, CaptureEnd, CaptureFilters, CaptureLimits,
+    CaptureStart, Describe, Envelope, EventAssociation, FunctionRef, MatchOrigin, MetadataEncoding,
+    MetadataScalar, MetadataValue, PacketMeta, PacketTuple, PresentedTimestamp, Reliability,
+    StopReason, TimestampMode, TraceEvent,
 };
 use skbx_core::{
     BoundedMap, DEFAULT_BTF_PATH, DropReasonTable, SymbolTable, build_dynamic_probe_plan,
@@ -1252,6 +1252,11 @@ fn convert_event(
             BpfProgramPhase::Entry
         }
     });
+    let bpf_program_action = components.bpf_program.and_then(|program| {
+        (program.kind == skbx_sensor::BPF_PROGRAM_XDP
+            && program.phase == skbx_sensor::BPF_PROGRAM_PHASE_EXIT)
+            .then(|| convert_xdp_action(raw.parameter_second as i32))
+    });
     let function_symbol = enrichment
         .symbols
         .resolve(raw.function_ip)
@@ -1316,6 +1321,7 @@ fn convert_event(
         btf_dumps: convert_btf_dumps(components.btf_dumps),
         bpf_program: components.bpf_program.map(convert_bpf_program),
         bpf_program_phase,
+        bpf_program_action,
         packet: PacketMeta {
             len: raw.len,
             protocol: u16::from_be(raw.protocol),
@@ -1341,6 +1347,21 @@ fn convert_bpf_program(raw: skbx_sensor::RawBpfProgram) -> BpfProgramRef {
             skbx_sensor::BPF_PROGRAM_XDP => BpfProgramKind::Xdp,
             _ => BpfProgramKind::Tc,
         },
+    }
+}
+
+fn convert_xdp_action(code: i32) -> BpfProgramAction {
+    BpfProgramAction {
+        code,
+        name: match code {
+            0 => "XDP_ABORTED",
+            1 => "XDP_DROP",
+            2 => "XDP_PASS",
+            3 => "XDP_TX",
+            4 => "XDP_REDIRECT",
+            _ => "XDP_UNKNOWN",
+        }
+        .into(),
     }
 }
 
@@ -1651,10 +1672,18 @@ fn event_display_name(event: &TraceEvent) -> String {
                 BpfProgramKind::Tc => "tc",
                 BpfProgramKind::Xdp => "xdp",
             };
-            format!(
+            let mut label = format!(
                 "bpf:{kind}:{}:{}/{}",
                 program.id, program.name, program.entry
-            )
+            );
+            if event.bpf_program_phase == Some(BpfProgramPhase::Exit) {
+                let action = event.bpf_program_action.as_ref().map_or_else(
+                    || "unknown".into(),
+                    |action| format!("{}({})", action.name, action.code),
+                );
+                label.push_str(&format!("@exit:{action}"));
+            }
+            label
         },
     )
 }
@@ -1712,6 +1741,18 @@ fn install_signal_handlers() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xdp_actions_are_named_without_losing_unknown_codes() {
+        assert_eq!(convert_xdp_action(2).name, "XDP_PASS");
+        assert_eq!(
+            convert_xdp_action(77),
+            BpfProgramAction {
+                code: 77,
+                name: "XDP_UNKNOWN".into(),
+            }
+        );
+    }
 
     #[test]
     fn bpf_program_identity_is_exact_in_events_and_text() {

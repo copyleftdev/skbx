@@ -242,8 +242,8 @@ impl Describe {
                     name: "tc-xdp-observation",
                     status: partial,
                     requires: "BPF program enumeration, program BTF and fentry",
-                    cost: "one shared-map fentry link per eligible TC or XDP program",
-                    description: "emit exact TC/XDP program identity and entry phase; exit/action evidence and dynamic BTF structure dumps remain planned",
+                    cost: "one TC entry link or paired XDP entry/exit links per eligible program",
+                    description: "emit exact TC entry and paired XDP entry/exit identity with decoded action; dynamic BTF structure dumps remain planned",
                 },
                 Capability {
                     name: "btf-checked-xdp-metadata-projections",
@@ -258,6 +258,13 @@ impl Describe {
                     requires: "target kernel BTF and XDP program tracing",
                     cost: "up to four bounded scalar reads per observed XDP entry",
                     description: "compile up to four &&-joined typed xdp_buff comparisons into immutable access plans with explicit read-failure telemetry",
+                },
+                Capability {
+                    name: "xdp-exit-action-evidence",
+                    status: supported.clone(),
+                    requires: "XDP program BTF and fexit",
+                    cost: "one bounded LRU state handoff and one exit record per matched entry",
+                    description: "pair matched entry/exit evidence and preserve the numeric XDP return code with a stable decoded action name",
                 },
                 Capability {
                     name: "route-consensus-and-outliers",
@@ -462,6 +469,12 @@ pub struct BpfProgramRef {
     pub kind: BpfProgramKind,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BpfProgramAction {
+    pub code: i32,
+    pub name: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventAssociation {
@@ -518,6 +531,8 @@ pub struct TraceEvent {
     pub bpf_program: Option<BpfProgramRef>,
     #[serde(default)]
     pub bpf_program_phase: Option<BpfProgramPhase>,
+    #[serde(default)]
+    pub bpf_program_action: Option<BpfProgramAction>,
     pub packet: PacketMeta,
     #[serde(default)]
     pub tuple: Option<PacketTuple>,
@@ -831,6 +846,12 @@ pub fn json_schema() -> serde_json::Value {
                         ]
                     },
                     "bpf_program_phase": {"enum": ["entry", "exit", null]},
+                    "bpf_program_action": {
+                        "oneOf": [
+                            {"$ref": "#/$defs/BpfProgramAction"},
+                            {"type": "null"}
+                        ]
+                    },
                     "packet": {"$ref": "#/$defs/PacketMeta"},
                     "tuple": {
                         "oneOf": [
@@ -999,6 +1020,15 @@ pub fn json_schema() -> serde_json::Value {
                 },
                 "additionalProperties": false
             },
+            "BpfProgramAction": {
+                "type": "object",
+                "required": ["code", "name"],
+                "properties": {
+                    "code": {"type": "integer"},
+                    "name": {"type": "string"}
+                },
+                "additionalProperties": false
+            },
             "MetadataUnsigned": {
                 "type": "object",
                 "required": ["kind", "value"],
@@ -1140,6 +1170,9 @@ mod tests {
         }));
         assert!(describe.capabilities.iter().any(|c| {
             c.name == "btf-checked-xdp-scalar-filter" && c.status == CapabilityStatus::Supported
+        }));
+        assert!(describe.capabilities.iter().any(|c| {
+            c.name == "xdp-exit-action-evidence" && c.status == CapabilityStatus::Supported
         }));
         assert_eq!(describe.defaults.max_events, 100_000);
     }

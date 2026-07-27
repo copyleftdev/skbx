@@ -389,10 +389,18 @@ fn event_function_name(event: &TraceEvent) -> String {
                 skbx_contract::BpfProgramKind::Tc => "tc",
                 skbx_contract::BpfProgramKind::Xdp => "xdp",
             };
-            format!(
+            let mut label = format!(
                 "bpf:{kind}:{}:{}/{}",
                 program.id, program.name, program.entry
-            )
+            );
+            if event.bpf_program_phase == Some(skbx_contract::BpfProgramPhase::Exit) {
+                let action = event.bpf_program_action.as_ref().map_or_else(
+                    || "unknown".into(),
+                    |action| format!("{}({})", action.name, action.code),
+                );
+                label.push_str(&format!("@exit:{action}"));
+            }
+            label
         },
     )
 }
@@ -416,6 +424,18 @@ fn validate_event(event: &TraceEvent, start: &CaptureStart) -> Result<(), Replay
         return Err(ReplayError::Contract(format!(
             "event {} references undeclared BPF program {}",
             event.seq, program.id
+        )));
+    }
+    if event.bpf_program_action.is_some()
+        && !(event
+            .bpf_program
+            .as_ref()
+            .is_some_and(|program| program.kind == skbx_contract::BpfProgramKind::Xdp)
+            && event.bpf_program_phase == Some(skbx_contract::BpfProgramPhase::Exit))
+    {
+        return Err(ReplayError::Contract(format!(
+            "event {} has a BPF action without an XDP exit",
+            event.seq
         )));
     }
     if !event.handle.starts_with("event:")
@@ -535,7 +555,8 @@ pub fn explain_with_context<R1: BufRead, R2: BufRead>(
 mod tests {
     use super::*;
     use skbx_contract::{
-        BpfProgramKind, BpfProgramRef, CaptureLimits, FunctionRef, PacketMeta, StopReason,
+        BpfProgramAction, BpfProgramKind, BpfProgramPhase, BpfProgramRef, CaptureLimits,
+        FunctionRef, PacketMeta, StopReason,
     };
     use std::io::Cursor;
 
@@ -573,6 +594,7 @@ mod tests {
                 kind: BpfProgramKind::Tc,
             }),
             bpf_program_phase: Some(skbx_contract::BpfProgramPhase::Entry),
+            bpf_program_action: None,
             packet: PacketMeta::default(),
             tuple: None,
             tunnel_tuple: None,
@@ -581,6 +603,23 @@ mod tests {
         assert_eq!(
             event_function_name(&event),
             "bpf:tc:42:cls_test/classify_packet"
+        );
+
+        let mut exit = event;
+        exit.bpf_program = Some(BpfProgramRef {
+            id: 43,
+            name: "xdp_pass".into(),
+            entry: "xdp_pass".into(),
+            kind: BpfProgramKind::Xdp,
+        });
+        exit.bpf_program_phase = Some(BpfProgramPhase::Exit);
+        exit.bpf_program_action = Some(BpfProgramAction {
+            code: 2,
+            name: "XDP_PASS".into(),
+        });
+        assert_eq!(
+            event_function_name(&exit),
+            "bpf:xdp:43:xdp_pass/xdp_pass@exit:XDP_PASS(2)"
         );
     }
 
@@ -634,6 +673,7 @@ mod tests {
             btf_dumps: Vec::new(),
             bpf_program: None,
             bpf_program_phase: None,
+            bpf_program_action: None,
             packet: PacketMeta {
                 len: 64,
                 protocol: 0x800,
@@ -804,6 +844,7 @@ mod tests {
                 btf_dumps: Vec::new(),
                 bpf_program: None,
                 bpf_program_phase: None,
+                bpf_program_action: None,
                 packet: PacketMeta {
                     len: 64,
                     protocol: 0x0800,
