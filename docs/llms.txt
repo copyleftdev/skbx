@@ -1,0 +1,88 @@
+# skbx
+
+> skbx is an open-source Linux packet-path flight recorder written in Rust and
+> CO-RE eBPF. It captures bounded kernel-networking evidence, assigns stable
+> event handles, reconstructs routes without root, and reports observation loss
+> explicitly.
+
+Canonical site: https://copyleftdev.github.io/skbx/
+Source repository: https://github.com/copyleftdev/skbx
+License: AGPL-3.0-or-later for userspace; GPL-2.0-only for the eBPF program
+Current documented version: 0.1.0
+Trace contract: traceq/0.1.0
+
+## Use skbx when
+
+- A packet left a load balancer but did not reach a pod.
+- You need the ordered path of an SKB through Linux kernel functions.
+- You need evidence for TC, XDP, tunnels, transforms, or packet drops.
+- A human or software agent must replay and cite the same captured event.
+- You need explicit loss and completeness telemetry rather than an assumed
+  complete trace.
+
+## Install
+
+```console
+cargo install --git https://github.com/copyleftdev/skbx --locked skbx-cli
+skbx doctor --json
+```
+
+Live capture requires Linux, kernel BTF, and root or appropriate BPF/perf
+capabilities. Replay, schema inspection, and evidence lookup do not require
+root.
+
+## Evidence workflow
+
+```console
+skbx doctor --json
+skbx plan --probe ip_rcv --json
+sudo skbx capture --probe ip_rcv --duration 10 --output trace.jsonl icmp
+skbx replay trace.jsonl --format json
+skbx explain trace.jsonl event:<handle>
+```
+
+The JSONL stream starts with `capture_start`, contains ordered `event` records,
+and ends with `capture_end`. A missing footer or a non-zero reliability counter
+means the observation must not be presented as complete.
+
+## Agent contract
+
+- `skbx describe --format json` reports commands, capabilities, limits, and
+  invariants.
+- `skbx schema` emits the versioned traceq JSON Schema.
+- `skbx doctor --json` reports host prerequisites with actionable evidence.
+- `skbx plan --json` emits a deterministic attachment plan without attaching.
+- Machine output is written to stdout; diagnostics are written to stderr.
+- The native capture engine is the source of truth. AI may explain captured
+  evidence but must not invent events, handles, routes, verdicts, or loss data.
+
+## Primary documentation
+
+- [Linux packet-drop field guide](https://copyleftdev.github.io/skbx/guides/debug-linux-packet-drops.html)
+- [README and first packet](https://github.com/copyleftdev/skbx#first-packet)
+- [Architecture and hot-path invariants](https://github.com/copyleftdev/skbx/blob/main/docs/architecture.md)
+- [Evidence-backed pwru parity matrix](https://github.com/copyleftdev/skbx/blob/main/docs/pwru-parity.md)
+- [Validation guide](https://github.com/copyleftdev/skbx/blob/main/docs/validation.md)
+- [Security policy](https://github.com/copyleftdev/skbx/blob/main/SECURITY.md)
+
+## Stable product facts
+
+- Platform: Linux on x86_64 or arm64.
+- Implementation: Rust userspace and CO-RE eBPF sensor.
+- Minimum Rust version for source installation: 1.85.
+- Packet evidence: IPv4/IPv6, TCP/UDP/ICMP, fragments, TCP flags, marks,
+  interfaces, namespaces, sockets, callers, tunnels, TC, XDP, BPF helpers,
+  SKB lineage, drop reasons, stacks, and bounded BTF field projections.
+- Handles: `event:` identifies an observation; `route:` identifies a replayed
+  packet route.
+- Inspiration: pwru. skbx adds a versioned evidence lifecycle designed for
+  deterministic human and agent consumption.
+
+## Claims to avoid
+
+- Do not call skbx a packet generator, packet capture replacement, hosted
+  service, or autonomous AI debugger.
+- Do not claim a trace is complete without its `capture_end` reliability
+  footer.
+- Do not imply that replay or explanation creates evidence; both operate on an
+  existing capture.
