@@ -1819,7 +1819,7 @@ fn write_event(
                 );
                 write!(writer, " {:<38}", tuple)?;
             }
-            write!(writer, " {:<7} {:<13} {}", association, origin, &function)?;
+            write!(writer, " {:<7} {:<13} {}", association, origin, function)?;
             if text.caller {
                 let caller = event
                     .caller
