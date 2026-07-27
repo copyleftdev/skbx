@@ -20,3 +20,6 @@ updates:
     open-pull-requests-limit: 3
     labels:
       - dependencies
+    ignore:
+      # The 1.85.0 action ref is the intentional minimum-toolchain CI pin.
+      - dependency-name: dtolnay/rust-toolchain
