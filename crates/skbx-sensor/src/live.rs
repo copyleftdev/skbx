@@ -18,6 +18,17 @@ static BPF_OBJECT: &Align8<{ include_bytes!(env!("SKBX_BPF_OBJ")).len() }> =
     &Align8(*include_bytes!(env!("SKBX_BPF_OBJ")));
 
 pub const MAX_CBPF_INSNS: usize = 4096;
+pub const MAX_METADATA_ACCESS_STEPS: usize = 4;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MetadataAccess {
+    pub offsets: [u32; MAX_METADATA_ACCESS_STEPS],
+    pub dereference_mask: u8,
+    pub steps: u8,
+    pub size: u8,
+    pub _pad: u8,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -59,6 +70,8 @@ pub struct SensorConfig {
     pub pcap_l3: CbpfProgram,
     pub tunnel_pcap_l2: CbpfProgram,
     pub tunnel_pcap_l3: CbpfProgram,
+    pub metadata_count: u32,
+    pub metadata: [MetadataAccess; crate::MAX_METADATA_PROJECTIONS],
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

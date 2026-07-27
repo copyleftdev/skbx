@@ -471,6 +471,7 @@ mod tests {
             attachment_backend: "kprobe".into(),
             timestamp_mode: "none".into(),
             output_tunnel: false,
+            metadata_projections: Vec::new(),
             filters: Default::default(),
             limits: CaptureLimits {
                 duration_seconds: 1,
@@ -501,6 +502,7 @@ mod tests {
             parameters: Default::default(),
             drop_reason: None,
             bpf_map: None,
+            metadata: Vec::new(),
             packet: PacketMeta {
                 len: 64,
                 protocol: 0x800,
@@ -627,6 +629,7 @@ mod tests {
             attachment_backend: "kprobe".into(),
             timestamp_mode: "none".into(),
             output_tunnel: false,
+            metadata_projections: Vec::new(),
             filters: Default::default(),
             limits: CaptureLimits {
                 duration_seconds: 1,
@@ -661,6 +664,7 @@ mod tests {
                 parameters: Default::default(),
                 drop_reason: None,
                 bpf_map: None,
+                metadata: Vec::new(),
                 packet: PacketMeta {
                     len: 64,
                     protocol: 0x0800,

@@ -56,6 +56,8 @@ ip netns exec "${NS_A}" tc filter add dev "${DEV_A}" egress \
 "${SKBX_BINARY}" capture \
     --probe tcf_classify \
     --filter-track-bpf-helpers \
+    --output-skb-metadata 'skb->mark' \
+    --output-skb-metadata 'skb->dev->ifindex' \
     --duration 4 \
     --max-events 512 \
     --ready-file "${READY}" \
@@ -93,6 +95,10 @@ jq -s -e '
         and $helper.bpf_map.value_size == 8
         and ($helper.bpf_map.key | startswith("0x"))
         and ($helper.bpf_map.read_errors | length) == 0
+        and ($helper.metadata | length) == 2
+        and ($helper.metadata | all(.read_error == null))
+        and $helper.metadata[0].value.value == $helper.packet.mark
+        and $helper.metadata[1].value.value == $helper.packet.ifindex
         and $direct.skb == $helper.skb
         and ($direct.packet.read_errors | length) == 0
         and ($helper.packet.read_errors | length) == 0

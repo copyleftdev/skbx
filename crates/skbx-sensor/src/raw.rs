@@ -24,6 +24,7 @@ pub const MAP_READ_METADATA_FAILED: u8 = 1 << 0;
 pub const MAP_READ_KEY_FAILED: u8 = 1 << 1;
 pub const MAP_READ_VALUE_FAILED: u8 = 1 << 2;
 pub const MAX_MAP_CAPTURE_BYTES: usize = 32;
+pub const MAX_METADATA_PROJECTIONS: usize = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -164,29 +165,95 @@ impl RawMapTraceEvent {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RawMetadata {
+    pub values: [u64; MAX_METADATA_PROJECTIONS],
+    pub read_status: u8,
+    pub count: u8,
+    pub _pad: [u8; 6],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RawMetadataTraceEvent {
+    pub event: RawTraceEvent,
+    pub metadata: RawMetadata,
+}
+
+impl RawMetadataTraceEvent {
+    pub const BYTE_LEN: usize = std::mem::size_of::<Self>();
+
+    fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        copy_record(bytes)
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RawMapMetadataTraceEvent {
+    pub map: RawMapTraceEvent,
+    pub metadata: RawMetadata,
+}
+
+impl RawMapMetadataTraceEvent {
+    pub const BYTE_LEN: usize = std::mem::size_of::<Self>();
+
+    fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        copy_record(bytes)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RawObservation {
     Trace(RawTraceEvent),
+    Metadata(RawMetadataTraceEvent),
     Map(RawMapTraceEvent),
+    MapMetadata(RawMapMetadataTraceEvent),
 }
 
 impl RawObservation {
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.len() == RawTraceEvent::BYTE_LEN {
             RawTraceEvent::from_bytes(bytes).map(Self::Trace)
+        } else if bytes.len() == RawMetadataTraceEvent::BYTE_LEN {
+            RawMetadataTraceEvent::from_bytes(bytes).map(Self::Metadata)
         } else if bytes.len() == RawMapTraceEvent::BYTE_LEN {
             RawMapTraceEvent::from_bytes(bytes).map(Self::Map)
+        } else if bytes.len() == RawMapMetadataTraceEvent::BYTE_LEN {
+            RawMapMetadataTraceEvent::from_bytes(bytes).map(Self::MapMetadata)
         } else {
             None
         }
     }
 
-    pub fn into_parts(self) -> (RawTraceEvent, Option<RawMapTraceEvent>) {
+    pub fn into_parts(self) -> (RawTraceEvent, Option<RawMapTraceEvent>, Option<RawMetadata>) {
         match self {
-            Self::Trace(event) => (event, None),
-            Self::Map(map) => (map.event, Some(map)),
+            Self::Trace(event) => (event, None, None),
+            Self::Metadata(record) => (record.event, None, Some(record.metadata)),
+            Self::Map(map) => (map.event, Some(map), None),
+            Self::MapMetadata(record) => {
+                (record.map.event, Some(record.map), Some(record.metadata))
+            }
         }
     }
+}
+
+fn copy_record<T: Copy + Default>(bytes: &[u8]) -> Option<T> {
+    if bytes.len() != std::mem::size_of::<T>() {
+        return None;
+    }
+    let mut record = T::default();
+    // SAFETY: destination is initialized and byte-addressable, lengths
+    // match, and the ring sample cannot overlap this stack value.
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            bytes.as_ptr(),
+            (&mut record as *mut T).cast::<u8>(),
+            bytes.len(),
+        );
+    }
+    Some(record)
 }
 
 #[repr(C)]
@@ -229,13 +296,24 @@ mod tests {
     #[test]
     fn decodes_base_and_extended_map_records_by_size() {
         assert_eq!(RawMapTraceEvent::BYTE_LEN, 320);
+        assert_eq!(std::mem::size_of::<RawMetadata>(), 40);
+        assert_eq!(RawMetadataTraceEvent::BYTE_LEN, 264);
+        assert_eq!(RawMapMetadataTraceEvent::BYTE_LEN, 360);
         assert!(matches!(
             RawObservation::from_bytes(&[0; 224]),
             Some(RawObservation::Trace(_))
         ));
         assert!(matches!(
+            RawObservation::from_bytes(&[0; 264]),
+            Some(RawObservation::Metadata(_))
+        ));
+        assert!(matches!(
             RawObservation::from_bytes(&[0; 320]),
             Some(RawObservation::Map(_))
+        ));
+        assert!(matches!(
+            RawObservation::from_bytes(&[0; 360]),
+            Some(RawObservation::MapMetadata(_))
         ));
         assert!(RawObservation::from_bytes(&[0; 319]).is_none());
     }

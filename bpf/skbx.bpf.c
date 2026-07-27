@@ -53,6 +53,8 @@
 #define MAP_READ_KEY_FAILED      (1u << 1)
 #define MAP_READ_VALUE_FAILED    (1u << 2)
 #define MAX_MAP_CAPTURE_BYTES 32
+#define MAX_METADATA_PROJECTIONS 4
+#define MAX_METADATA_ACCESS_STEPS 4
 
 #define ETH_P_IP   0x0800
 #define ETH_P_IPV6 0x86dd
@@ -185,10 +187,46 @@ struct skbx_map_trace_event {
     __u8 value[MAX_MAP_CAPTURE_BYTES];
 };
 
+struct skbx_metadata {
+    __u64 values[MAX_METADATA_PROJECTIONS];
+    __u8 read_status;
+    __u8 count;
+    __u8 _pad[6];
+};
+
+struct skbx_metadata_trace_event {
+    struct skbx_trace_event event;
+    struct skbx_metadata metadata;
+};
+
+struct skbx_map_metadata_trace_event {
+    struct skbx_map_trace_event map;
+    struct skbx_metadata metadata;
+};
+
+_Static_assert(sizeof(struct skbx_trace_event) == 224,
+               "base trace record ABI changed");
+_Static_assert(sizeof(struct skbx_map_trace_event) == 320,
+               "map trace record ABI changed");
+_Static_assert(sizeof(struct skbx_metadata) == 40,
+               "metadata record ABI changed");
+_Static_assert(sizeof(struct skbx_metadata_trace_event) == 264,
+               "metadata trace record ABI changed");
+_Static_assert(sizeof(struct skbx_map_metadata_trace_event) == 360,
+               "map metadata trace record ABI changed");
+
 struct kernel_stats {
     __u64 reserve_failures;
     __u64 read_failures;
     __u64 filtered_events;
+};
+
+struct metadata_access {
+    __u32 offsets[MAX_METADATA_ACCESS_STEPS];
+    __u8 dereference_mask;
+    __u8 steps;
+    __u8 size;
+    __u8 _pad;
 };
 
 struct skbx_config {
@@ -204,6 +242,8 @@ struct skbx_config {
     struct cbpf_program pcap_l3;
     struct cbpf_program tunnel_pcap_l2;
     struct cbpf_program tunnel_pcap_l3;
+    __u32 metadata_count;
+    struct metadata_access metadata[MAX_METADATA_PROJECTIONS];
 };
 
 const volatile struct skbx_config CONFIG = {};
@@ -931,6 +971,75 @@ static __always_inline void fill_trace_event(
         counters->read_failures++;
 }
 
+static __always_inline void fill_metadata(struct sk_buff *skb,
+                                          struct skbx_metadata *metadata,
+                                          struct kernel_stats *counters)
+{
+    __builtin_memset(metadata, 0, sizeof(*metadata));
+    metadata->count = CONFIG.metadata_count < MAX_METADATA_PROJECTIONS ?
+        CONFIG.metadata_count : MAX_METADATA_PROJECTIONS;
+
+#pragma clang loop unroll(full)
+    for (int projection = 0; projection < MAX_METADATA_PROJECTIONS;
+         projection++) {
+        const volatile struct metadata_access *access =
+            &CONFIG.metadata[projection];
+        void *cursor = skb;
+        int failed = !skb;
+
+        if (projection >= metadata->count)
+            break;
+#pragma clang loop unroll(full)
+        for (int step = 0; step < MAX_METADATA_ACCESS_STEPS; step++) {
+            void *address;
+
+            if (failed || step >= access->steps)
+                break;
+            address = cursor + access->offsets[step];
+            if (step + 1 < access->steps) {
+                if (access->dereference_mask & (1u << step)) {
+                    __u64 next = 0;
+
+                    if (bpf_probe_read_kernel(&next, sizeof(next), address) ||
+                        !next) {
+                        failed = 1;
+                        break;
+                    }
+                    cursor = (void *)next;
+                } else {
+                    cursor = address;
+                }
+                continue;
+            }
+            switch (access->size) {
+            case 1:
+                failed = bpf_probe_read_kernel(
+                    &metadata->values[projection], 1, address);
+                break;
+            case 2:
+                failed = bpf_probe_read_kernel(
+                    &metadata->values[projection], 2, address);
+                break;
+            case 4:
+                failed = bpf_probe_read_kernel(
+                    &metadata->values[projection], 4, address);
+                break;
+            case 8:
+                failed = bpf_probe_read_kernel(
+                    &metadata->values[projection], 8, address);
+                break;
+            default:
+                failed = 1;
+                break;
+            }
+        }
+        if (failed)
+            metadata->read_status |= 1u << projection;
+    }
+    if (metadata->read_status && counters)
+        counters->read_failures++;
+}
+
 static __always_inline int trace_skb_associated(struct pt_regs *ctx,
                                                 struct sk_buff *skb,
                                                 __u8 association)
@@ -951,17 +1060,33 @@ static __always_inline int trace_skb_associated(struct pt_regs *ctx,
     }
     if (association == ASSOCIATION_DIRECT && CONFIG.track_stack)
         associate_stack(ctx, skb);
-    struct skbx_trace_event *event =
-        bpf_ringbuf_reserve(&events, sizeof(*event), 0);
+    if (CONFIG.metadata_count) {
+        struct skbx_metadata_trace_event *record =
+            bpf_ringbuf_reserve(&events, sizeof(*record), 0);
 
-    if (!event) {
-        if (counters)
-            counters->reserve_failures++;
-        return 0;
+        if (!record) {
+            if (counters)
+                counters->reserve_failures++;
+            return 0;
+        }
+        __builtin_memset(record, 0, sizeof(*record));
+        fill_trace_event(ctx, skb, association, match, identity,
+                         &record->event, counters);
+        fill_metadata(skb, &record->metadata, counters);
+        bpf_ringbuf_submit(record, 0);
+    } else {
+        struct skbx_trace_event *event =
+            bpf_ringbuf_reserve(&events, sizeof(*event), 0);
+
+        if (!event) {
+            if (counters)
+                counters->reserve_failures++;
+            return 0;
+        }
+        fill_trace_event(ctx, skb, association, match, identity, event,
+                         counters);
+        bpf_ringbuf_submit(event, 0);
     }
-
-    fill_trace_event(ctx, skb, association, match, identity, event, counters);
-    bpf_ringbuf_submit(event, 0);
     return 0;
 }
 
@@ -1002,41 +1127,14 @@ int skbx_stack_associated(struct pt_regs *ctx)
                                ASSOCIATION_STACK);
 }
 
-static __always_inline int trace_map_associated(struct pt_regs *ctx,
-                                                __u8 operation)
+static __always_inline void fill_map_operation(
+    struct pt_regs *ctx, __u8 operation, struct skbx_map_trace_event *record,
+    struct kernel_stats *counters)
 {
-    struct kernel_stats *counters = stats();
-    __u64 anchor = get_stack_anchor(ctx);
-    __u64 *skb_addr;
-    __u64 identity;
-    __u64 *tracked_identity;
     struct bpf_map *map = (struct bpf_map *)PT_REGS_PARM1(ctx);
-    struct skbx_map_trace_event *record;
     __u32 captured;
 
-    if (!CONFIG.track_stack || !anchor)
-        return 0;
-    skb_addr = bpf_map_lookup_elem(&stack_anchor_skb, &anchor);
-    if (!skb_addr || !*skb_addr)
-        return 0;
-    identity = *skb_addr;
-    if (CONFIG.track_skb) {
-        tracked_identity = bpf_map_lookup_elem(&tracked_skbs, skb_addr);
-        if (tracked_identity)
-            identity = *tracked_identity;
-    }
-
-    record = bpf_ringbuf_reserve(&events, sizeof(*record), 0);
-    if (!record) {
-        if (counters)
-            counters->reserve_failures++;
-        return 0;
-    }
-    __builtin_memset(record, 0, sizeof(*record));
-    fill_trace_event(ctx, (struct sk_buff *)*skb_addr, ASSOCIATION_STACK,
-                     MATCH_FILTER, identity, &record->event, counters);
     record->operation = operation;
-
     if (!map ||
         bpf_core_read(&record->map_id, sizeof(record->map_id), &map->id) ||
         bpf_core_read(&record->key_size, sizeof(record->key_size),
@@ -1065,7 +1163,59 @@ static __always_inline int trace_map_associated(struct pt_regs *ctx,
     }
     if (record->map_read_status && counters)
         counters->read_failures++;
-    bpf_ringbuf_submit(record, 0);
+}
+
+static __always_inline int trace_map_associated(struct pt_regs *ctx,
+                                                __u8 operation)
+{
+    struct kernel_stats *counters = stats();
+    __u64 anchor = get_stack_anchor(ctx);
+    __u64 *skb_addr;
+    __u64 identity;
+    __u64 *tracked_identity;
+
+    if (!CONFIG.track_stack || !anchor)
+        return 0;
+    skb_addr = bpf_map_lookup_elem(&stack_anchor_skb, &anchor);
+    if (!skb_addr || !*skb_addr)
+        return 0;
+    identity = *skb_addr;
+    if (CONFIG.track_skb) {
+        tracked_identity = bpf_map_lookup_elem(&tracked_skbs, skb_addr);
+        if (tracked_identity)
+            identity = *tracked_identity;
+    }
+
+    if (CONFIG.metadata_count) {
+        struct skbx_map_metadata_trace_event *record =
+            bpf_ringbuf_reserve(&events, sizeof(*record), 0);
+
+        if (!record) {
+            if (counters)
+                counters->reserve_failures++;
+            return 0;
+        }
+        __builtin_memset(record, 0, sizeof(*record));
+        fill_trace_event(ctx, (struct sk_buff *)*skb_addr, ASSOCIATION_STACK,
+                         MATCH_FILTER, identity, &record->map.event, counters);
+        fill_map_operation(ctx, operation, &record->map, counters);
+        fill_metadata((struct sk_buff *)*skb_addr, &record->metadata, counters);
+        bpf_ringbuf_submit(record, 0);
+    } else {
+        struct skbx_map_trace_event *record =
+            bpf_ringbuf_reserve(&events, sizeof(*record), 0);
+
+        if (!record) {
+            if (counters)
+                counters->reserve_failures++;
+            return 0;
+        }
+        __builtin_memset(record, 0, sizeof(*record));
+        fill_trace_event(ctx, (struct sk_buff *)*skb_addr, ASSOCIATION_STACK,
+                         MATCH_FILTER, identity, &record->event, counters);
+        fill_map_operation(ctx, operation, record, counters);
+        bpf_ringbuf_submit(record, 0);
+    }
     return 0;
 }
 

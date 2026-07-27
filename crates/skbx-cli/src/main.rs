@@ -4,11 +4,13 @@ use nix::sched::{CloneFlags, setns};
 use skbx_contract::{
     BpfMapOperation, BpfMapOperationKind, CONTRACT_VERSION, CaptureEnd, CaptureFilters,
     CaptureLimits, CaptureStart, Describe, Envelope, EventAssociation, FunctionRef, MatchOrigin,
-    PacketMeta, PacketTuple, PresentedTimestamp, StopReason, TimestampMode, TraceEvent,
+    MetadataEncoding, MetadataScalar, MetadataValue, PacketMeta, PacketTuple, PresentedTimestamp,
+    StopReason, TimestampMode, TraceEvent,
 };
 use skbx_core::{
     BoundedMap, DEFAULT_BTF_PATH, DropReasonTable, SymbolTable, build_probe_plan_with_bpf_helpers,
     capture_id, discover_bpf_helpers, doctor, event_handle, explain_file, replay,
+    resolve_skb_metadata,
 };
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
@@ -134,6 +136,9 @@ enum Command {
         /// Decode the inner IP tuple from SKBs carrying tunnel header offsets.
         #[arg(long)]
         output_tunnel: bool,
+        /// Emit up to four BTF-validated scalar paths such as skb->mark.
+        #[arg(long = "output-skb-metadata")]
+        output_skb_metadata: Vec<String>,
         /// Probe attachment backend; auto falls back to individual kprobes.
         #[arg(long, value_enum, default_value_t = AttachmentBackend::Auto)]
         backend: AttachmentBackend,
@@ -322,6 +327,7 @@ fn run(cli: Cli) -> Result<u8> {
             filter_tunnel_pcap_l3,
             output_stack,
             output_tunnel,
+            output_skb_metadata,
             backend,
             timestamp,
             duration,
@@ -349,6 +355,7 @@ fn run(cli: Cli) -> Result<u8> {
             filter_tunnel_pcap_l3.as_deref(),
             output_stack,
             output_tunnel,
+            &output_skb_metadata,
             backend,
             timestamp,
             duration,
@@ -458,6 +465,7 @@ fn capture(
     filter_tunnel_pcap_l3: Option<&str>,
     output_stack: bool,
     output_tunnel: bool,
+    output_skb_metadata: &[String],
     backend: AttachmentBackend,
     timestamp: TimestampOutput,
     duration_seconds: u64,
@@ -481,6 +489,7 @@ fn capture(
     if let Some(path) = ready_file {
         prepare_ready_file(path)?;
     }
+    let metadata_projections = resolve_skb_metadata(output_skb_metadata, kernel_btf)?;
     let mut filters = resolve_filters(filter_mark, filter_ifindex, filter_ifname, filter_netns)?;
     filters.pcap = (!pcap_filter.is_empty()).then(|| pcap_filter.join(" "));
     filters.tunnel_pcap_l2 = filter_tunnel_pcap_l2.map(str::to_owned);
@@ -570,6 +579,10 @@ fn capture(
             attachment_backend: String::new(),
             timestamp_mode: timestamp.label().into(),
             output_tunnel,
+            metadata_projections: metadata_projections
+                .iter()
+                .map(|projection| projection.descriptor.clone())
+                .collect(),
             filters: filters.clone(),
             limits: CaptureLimits {
                 duration_seconds,
@@ -597,6 +610,19 @@ fn capture(
             pcap_l3,
             tunnel_pcap_l2,
             tunnel_pcap_l3,
+            metadata_count: metadata_projections.len() as u32,
+            metadata: std::array::from_fn(|index| {
+                metadata_projections.get(index).map_or_else(
+                    skbx_sensor::MetadataAccess::default,
+                    |projection| skbx_sensor::MetadataAccess {
+                        offsets: projection.access.offsets,
+                        dereference_mask: projection.access.dereference_mask,
+                        steps: projection.access.steps,
+                        size: projection.access.size,
+                        _pad: 0,
+                    },
+                )
+            }),
         };
         let mut sensor = skbx_sensor::LiveSensor::attach(
             &attachments,
@@ -652,9 +678,21 @@ fn capture(
                     stop_reason = StopReason::EventLimit;
                     break;
                 }
-                let (raw, map) = observation.into_parts();
+                let (raw, map, metadata) = observation.into_parts();
                 let stack = sensor.stack_frames(raw.stack_id);
-                let mut event = convert_event(&id, seq, raw, map, &symbols, &drop_reasons, &stack);
+                let mut event = convert_event(
+                    &id,
+                    seq,
+                    raw,
+                    map,
+                    metadata,
+                    EventEnrichment {
+                        metadata_projections: &metadata_projections,
+                        symbols: &symbols,
+                        drop_reasons: &drop_reasons,
+                        stack: &stack,
+                    },
+                );
                 event.presentation_timestamp = present_timestamp(
                     timestamp,
                     &event,
@@ -879,20 +917,29 @@ fn parse_u32(value: &str) -> Result<u32> {
     u32::from_str_radix(digits, radix).with_context(|| format!("parse {value:?} as u32"))
 }
 
+struct EventEnrichment<'a> {
+    metadata_projections: &'a [skbx_core::ResolvedMetadataProjection],
+    symbols: &'a SymbolTable,
+    drop_reasons: &'a DropReasonTable,
+    stack: &'a [u64],
+}
+
 fn convert_event(
     capture_id: &str,
     seq: u64,
     raw: skbx_sensor::RawTraceEvent,
     raw_map: Option<skbx_sensor::RawMapTraceEvent>,
-    symbols: &SymbolTable,
-    drop_reasons: &DropReasonTable,
-    stack: &[u64],
+    raw_metadata: Option<skbx_sensor::RawMetadata>,
+    enrichment: EventEnrichment<'_>,
 ) -> TraceEvent {
-    let function_symbol = symbols.resolve(raw.function_ip).map(str::to_owned);
+    let function_symbol = enrichment
+        .symbols
+        .resolve(raw.function_ip)
+        .map(str::to_owned);
     let drop_reason = function_symbol
         .as_deref()
         .and_then(|function| drop_reason_parameter(function, &raw))
-        .and_then(|reason| drop_reasons.resolve(reason))
+        .and_then(|reason| enrichment.drop_reasons.resolve(reason))
         .map(str::to_owned);
     TraceEvent {
         schema: CONTRACT_VERSION.into(),
@@ -929,13 +976,14 @@ fn convert_event(
         },
         caller: (raw.caller_ip != 0).then(|| FunctionRef {
             address: format!("{:#x}", raw.caller_ip),
-            symbol: symbols.resolve(raw.caller_ip).map(str::to_owned),
+            symbol: enrichment.symbols.resolve(raw.caller_ip).map(str::to_owned),
         }),
-        stack: stack
+        stack: enrichment
+            .stack
             .iter()
             .map(|address| FunctionRef {
                 address: format!("{address:#x}"),
-                symbol: symbols.resolve(*address).map(str::to_owned),
+                symbol: enrichment.symbols.resolve(*address).map(str::to_owned),
             })
             .collect(),
         parameters: [
@@ -944,6 +992,7 @@ fn convert_event(
         ],
         drop_reason,
         bpf_map: raw_map.map(convert_bpf_map),
+        metadata: convert_metadata(raw_metadata, enrichment.metadata_projections),
         packet: PacketMeta {
             len: raw.len,
             protocol: u16::from_be(raw.protocol),
@@ -957,6 +1006,61 @@ fn convert_event(
         },
         tuple: packet_tuple(&raw.tuple),
         tunnel_tuple: packet_tuple(&raw.tunnel_tuple),
+    }
+}
+
+fn convert_metadata(
+    raw: Option<skbx_sensor::RawMetadata>,
+    projections: &[skbx_core::ResolvedMetadataProjection],
+) -> Vec<MetadataValue> {
+    projections
+        .iter()
+        .enumerate()
+        .map(|(index, projection)| {
+            let read_error = match raw {
+                Some(raw)
+                    if index < usize::from(raw.count) && raw.read_status & (1_u8 << index) == 0 =>
+                {
+                    None
+                }
+                Some(raw) if index < usize::from(raw.count) => Some("kernel_read".into()),
+                _ => Some("record_missing".into()),
+            };
+            let value = read_error
+                .is_none()
+                .then(|| metadata_scalar(&projection.descriptor, raw.unwrap().values[index]));
+            MetadataValue {
+                expression: projection.descriptor.expression.clone(),
+                type_name: projection.descriptor.type_name.clone(),
+                encoding: projection.descriptor.encoding.clone(),
+                value,
+                read_error,
+            }
+        })
+        .collect()
+}
+
+fn metadata_scalar(projection: &skbx_contract::MetadataProjection, raw: u64) -> MetadataScalar {
+    let bits = u32::from(projection.size) * 8;
+    let value = if bits < 64 {
+        raw & ((1_u64 << bits) - 1)
+    } else {
+        raw
+    };
+    match projection.encoding {
+        MetadataEncoding::Unsigned => MetadataScalar::Unsigned { value },
+        MetadataEncoding::Signed => {
+            let value = if bits == 64 {
+                value as i64
+            } else {
+                ((value << (64 - bits)) as i64) >> (64 - bits)
+            };
+            MetadataScalar::Signed { value }
+        }
+        MetadataEncoding::Boolean => MetadataScalar::Boolean { value: value != 0 },
+        MetadataEncoding::Pointer => MetadataScalar::Pointer {
+            address: format!("{value:#x}"),
+        },
     }
 }
 
@@ -1210,8 +1314,32 @@ mod tests {
         };
         let symbols = SymbolTable::parse("0000000000001000 T ip_rcv\n");
         let drop_reasons = DropReasonTable::default();
-        let a = convert_event("capture", 0, raw, None, &symbols, &drop_reasons, &[0x1010]);
-        let b = convert_event("capture", 0, raw, None, &symbols, &drop_reasons, &[0x1010]);
+        let a = convert_event(
+            "capture",
+            0,
+            raw,
+            None,
+            None,
+            EventEnrichment {
+                metadata_projections: &[],
+                symbols: &symbols,
+                drop_reasons: &drop_reasons,
+                stack: &[0x1010],
+            },
+        );
+        let b = convert_event(
+            "capture",
+            0,
+            raw,
+            None,
+            None,
+            EventEnrichment {
+                metadata_projections: &[],
+                symbols: &symbols,
+                drop_reasons: &drop_reasons,
+                stack: &[0x1010],
+            },
+        );
         assert_eq!(a, b);
         assert_eq!(a.function.symbol.as_deref(), Some("ip_rcv"));
         assert_eq!(a.caller.as_ref().unwrap().symbol.as_deref(), Some("ip_rcv"));
@@ -1236,9 +1364,13 @@ mod tests {
                 ..raw
             },
             None,
-            &symbols,
-            &drop_reasons,
-            &[],
+            None,
+            EventEnrichment {
+                metadata_projections: &[],
+                symbols: &symbols,
+                drop_reasons: &drop_reasons,
+                stack: &[],
+            },
         );
         assert_eq!(associated.association, EventAssociation::Stack);
     }
@@ -1270,6 +1402,58 @@ mod tests {
         assert!(operation.key_truncated);
         assert!(!operation.value_truncated);
         assert_eq!(operation.read_errors, ["value"]);
+    }
+
+    #[test]
+    fn metadata_conversion_is_typed_and_reports_individual_failures() {
+        let projections = [
+            skbx_core::ResolvedMetadataProjection {
+                descriptor: skbx_contract::MetadataProjection {
+                    expression: "skb->mark".into(),
+                    type_name: "unsigned int".into(),
+                    encoding: MetadataEncoding::Unsigned,
+                    size: 4,
+                },
+                access: Default::default(),
+            },
+            skbx_core::ResolvedMetadataProjection {
+                descriptor: skbx_contract::MetadataProjection {
+                    expression: "skb->skb_iif".into(),
+                    type_name: "int".into(),
+                    encoding: MetadataEncoding::Signed,
+                    size: 4,
+                },
+                access: Default::default(),
+            },
+        ];
+        let metadata = convert_metadata(
+            Some(skbx_sensor::RawMetadata {
+                values: [7, u64::from(u32::MAX), 0, 0],
+                count: 2,
+                ..Default::default()
+            }),
+            &projections,
+        );
+        assert_eq!(
+            metadata[0].value,
+            Some(MetadataScalar::Unsigned { value: 7 })
+        );
+        assert_eq!(
+            metadata[1].value,
+            Some(MetadataScalar::Signed { value: -1 })
+        );
+
+        let failed = convert_metadata(
+            Some(skbx_sensor::RawMetadata {
+                count: 2,
+                read_status: 1 << 1,
+                ..Default::default()
+            }),
+            &projections,
+        );
+        assert_eq!(failed[0].read_error, None);
+        assert_eq!(failed[1].value, None);
+        assert_eq!(failed[1].read_error.as_deref(), Some("kernel_read"));
     }
 
     #[test]
@@ -1332,9 +1516,13 @@ mod tests {
             0,
             raw,
             None,
-            &SymbolTable::default(),
-            &DropReasonTable::default(),
-            &[],
+            None,
+            EventEnrichment {
+                metadata_projections: &[],
+                symbols: &SymbolTable::default(),
+                drop_reasons: &DropReasonTable::default(),
+                stack: &[],
+            },
         );
         let mut last = BoundedMap::new(2);
         let first = present_timestamp(TimestampOutput::Relative, &event, 1_000, 100, &mut last)

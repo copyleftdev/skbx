@@ -33,7 +33,7 @@ coverage and a relevant live-kernel check exist.
 | Tunnel tuple | supported | `--output-tunnel` decodes from the kernel-maintained `inner_network_header`; isolated VXLAN gate validates outer UDP and inner ICMP evidence with zero read/reserve failures |
 | Full `sk_buff` / shared-info dump | missing | Needs `bpf_snprintf_btf` buffers or a typed bounded field projection |
 | SKB control buffer | supported | Fixed 20-byte CO-RE read |
-| Custom SKB/XDP metadata expressions | missing | Needs constrained BTF-checked field projections |
+| Custom SKB/XDP metadata expressions | partial | SKB side supports at most four strict target-BTF-validated scalar paths, four access steps, typed values and per-field failures via optional 264/360-byte records; XDP projections remain missing |
 | Caller | supported | Return address capture and deterministic kallsyms enrichment |
 | Kernel stack | supported | Optional 50-frame stack map with explicit enrichment-failure telemetry |
 | SKB drop reason | supported | BTF enum decoding for both `kfree_skb_reason` and the older `sk_skb_reason_drop` signature; live checked with named reasons |

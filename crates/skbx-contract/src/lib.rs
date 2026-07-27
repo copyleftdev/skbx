@@ -196,6 +196,13 @@ impl Describe {
                     description: "emit typed map identity, bounded key and update-value bytes with explicit truncation and read errors",
                 },
                 Capability {
+                    name: "btf-checked-skb-metadata-projections",
+                    status: supported.clone(),
+                    requires: "target kernel BTF",
+                    cost: "up to four scalar reads and an extended record only when requested",
+                    description: "resolve bounded skb field paths before attach and emit typed values with per-projection read errors",
+                },
+                Capability {
                     name: "skb-drop-reason",
                     status: supported.clone(),
                     requires: "kernel BTF enum and a supported drop function",
@@ -352,6 +359,41 @@ pub struct BpfMapOperation {
     pub read_errors: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetadataEncoding {
+    Unsigned,
+    Signed,
+    Boolean,
+    Pointer,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetadataProjection {
+    pub expression: String,
+    pub type_name: String,
+    pub encoding: MetadataEncoding,
+    pub size: u8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MetadataScalar {
+    Unsigned { value: u64 },
+    Signed { value: i64 },
+    Boolean { value: bool },
+    Pointer { address: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetadataValue {
+    pub expression: String,
+    pub type_name: String,
+    pub encoding: MetadataEncoding,
+    pub value: Option<MetadataScalar>,
+    pub read_error: Option<String>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventAssociation {
@@ -400,6 +442,8 @@ pub struct TraceEvent {
     pub drop_reason: Option<String>,
     #[serde(default)]
     pub bpf_map: Option<BpfMapOperation>,
+    #[serde(default)]
+    pub metadata: Vec<MetadataValue>,
     pub packet: PacketMeta,
     #[serde(default)]
     pub tuple: Option<PacketTuple>,
@@ -439,6 +483,8 @@ pub struct CaptureStart {
     pub timestamp_mode: String,
     #[serde(default)]
     pub output_tunnel: bool,
+    #[serde(default)]
+    pub metadata_projections: Vec<MetadataProjection>,
     #[serde(default)]
     pub filters: CaptureFilters,
     pub limits: CaptureLimits,
@@ -592,6 +638,11 @@ pub fn json_schema() -> serde_json::Value {
                     "attachment_backend": {"enum": ["kprobe", "kprobe-multi"]},
                     "timestamp_mode": {"enum": ["none", "current", "relative", "absolute"]},
                     "output_tunnel": {"type": "boolean"},
+                    "metadata_projections": {
+                        "type": "array",
+                        "items": {"$ref": "#/$defs/MetadataProjection"},
+                        "maxItems": 4
+                    },
                     "filters": {"$ref": "#/$defs/CaptureFilters"},
                     "limits": {"$ref": "#/$defs/CaptureLimits"}
                 },
@@ -644,6 +695,11 @@ pub fn json_schema() -> serde_json::Value {
                             {"$ref": "#/$defs/BpfMapOperation"},
                             {"type": "null"}
                         ]
+                    },
+                    "metadata": {
+                        "type": "array",
+                        "items": {"$ref": "#/$defs/MetadataValue"},
+                        "maxItems": 4
                     },
                     "packet": {"$ref": "#/$defs/PacketMeta"},
                     "tuple": {
@@ -728,6 +784,73 @@ pub fn json_schema() -> serde_json::Value {
                         "items": {"enum": ["metadata", "key", "value"]},
                         "uniqueItems": true
                     }
+                },
+                "additionalProperties": false
+            },
+            "MetadataProjection": {
+                "type": "object",
+                "required": ["expression", "type_name", "encoding", "size"],
+                "properties": {
+                    "expression": {"type": "string", "pattern": "^skb->"},
+                    "type_name": {"type": "string"},
+                    "encoding": {"enum": ["unsigned", "signed", "boolean", "pointer"]},
+                    "size": {"enum": [1, 2, 4, 8]}
+                },
+                "additionalProperties": false
+            },
+            "MetadataValue": {
+                "type": "object",
+                "required": ["expression", "type_name", "encoding", "value", "read_error"],
+                "properties": {
+                    "expression": {"type": "string", "pattern": "^skb->"},
+                    "type_name": {"type": "string"},
+                    "encoding": {"enum": ["unsigned", "signed", "boolean", "pointer"]},
+                    "value": {
+                        "oneOf": [
+                            {"$ref": "#/$defs/MetadataUnsigned"},
+                            {"$ref": "#/$defs/MetadataSigned"},
+                            {"$ref": "#/$defs/MetadataBoolean"},
+                            {"$ref": "#/$defs/MetadataPointer"},
+                            {"type": "null"}
+                        ]
+                    },
+                    "read_error": {"enum": ["kernel_read", "record_missing", null]}
+                },
+                "additionalProperties": false
+            },
+            "MetadataUnsigned": {
+                "type": "object",
+                "required": ["kind", "value"],
+                "properties": {
+                    "kind": {"const": "unsigned"},
+                    "value": {"type": "integer", "minimum": 0}
+                },
+                "additionalProperties": false
+            },
+            "MetadataSigned": {
+                "type": "object",
+                "required": ["kind", "value"],
+                "properties": {
+                    "kind": {"const": "signed"},
+                    "value": {"type": "integer"}
+                },
+                "additionalProperties": false
+            },
+            "MetadataBoolean": {
+                "type": "object",
+                "required": ["kind", "value"],
+                "properties": {
+                    "kind": {"const": "boolean"},
+                    "value": {"type": "boolean"}
+                },
+                "additionalProperties": false
+            },
+            "MetadataPointer": {
+                "type": "object",
+                "required": ["kind", "address"],
+                "properties": {
+                    "kind": {"const": "pointer"},
+                    "address": {"type": "string", "pattern": "^0x[0-9a-f]+$"}
                 },
                 "additionalProperties": false
             },

@@ -41,6 +41,8 @@ split BTF. It records:
   with every event labeled `direct` or `stack`;
 - typed lookup/update/delete map-operation evidence with map identity and
   explicitly bounded key/update-value bytes;
+- up to four target-BTF-validated scalar `skb->…` metadata projections,
+  including bounded pointer chains and typed per-field read errors;
 - caller, network namespace, MTU and the SKB control buffer;
 - BTF-decoded SKB drop reasons on supported drop functions;
 - kernel ring-buffer reserve failures.
@@ -54,8 +56,8 @@ resolved in the namespace selected by `--filter-netns`, and device-less
 output SKBs fall back to their socket namespace.
 
 It does **not yet** claim full `pwru` parity. Packet-byte/BTF dumps, TC/XDP
-program tracing, arbitrary SKB expressions and rolling output remain explicit
-gaps.
+program tracing, arbitrary SKB/XDP filter expressions, XDP metadata
+projections and rolling output remain explicit gaps.
 
 ## Commands
 
@@ -71,6 +73,9 @@ sudo skbx capture --probe tcp_v4_do_rcv --output-stack \
 sudo skbx capture --probe ip_local_out --output-tunnel \
   --filter-tunnel-pcap-l2 'ether proto 0x0800' \
   --filter-tunnel-pcap-l3 'icmp' --output trace.jsonl udp port 4789
+sudo skbx capture --probe ip_rcv \
+  --output-skb-metadata 'skb->mark' \
+  --output-skb-metadata 'skb->dev->ifindex' --output trace.jsonl
 skbx replay trace.jsonl --format json
 skbx explain trace.jsonl event:<handle>
 ```
