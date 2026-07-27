@@ -1,0 +1,14 @@
+# Search and answer-engine crawlers may index the public documentation.
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: Claude-SearchBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: *
+Allow: /
+
+Sitemap: https://copyleftdev.github.io/skbx/sitemap.xml

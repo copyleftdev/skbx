@@ -1,14 +1,27 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#12150f">
-  <meta name="description" content="skbx traces where packets travel inside Linux and preserves bounded, replayable evidence with stable handles and explicit loss telemetry.">
-  <meta property="og:title" content="skbx — packet paths, with receipts">
-  <meta property="og:description" content="Trace kernel networking paths. Capture the evidence. Replay every route.">
+  <meta name="description" content="Trace Linux packet paths through kernel hooks, TC, XDP, tunnels, and drops with Rust and CO-RE eBPF—then replay the bounded evidence.">
+  <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+  <meta name="author" content="copyleftdev">
+  <meta property="og:title" content="skbx — Linux packet tracing with replayable eBPF evidence">
+  <meta property="og:description" content="See where a packet went inside Linux. Preserve stable event handles, replay exact routes, and inspect explicit loss telemetry.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://copyleftdev.github.io/skbx/">
+  <meta property="og:site_name" content="skbx">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:image" content="https://copyleftdev.github.io/skbx/assets/skbx-social-card.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="skbx packet flight recorder route through Linux kernel hooks">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="skbx — Linux packet tracing with replayable eBPF evidence">
+  <meta name="twitter:description" content="Capture Linux kernel packet paths, replay exact routes, and keep explicit reliability telemetry.">
+  <meta name="twitter:image" content="https://copyleftdev.github.io/skbx/assets/skbx-social-card.png">
+  <meta name="twitter:image:alt" content="skbx packet flight recorder route through Linux kernel hooks">
   <link rel="canonical" href="https://copyleftdev.github.io/skbx/">
   <link rel="icon" href="assets/skbx-flight-mark.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -18,7 +31,80 @@
   <noscript><link href="https://fonts.googleapis.com/css2?family=Recursive:slnt,wght@-15..0,300..1000&amp;display=swap" rel="stylesheet"></noscript>
   <link rel="stylesheet" href="styles.css">
   <script src="site.js" defer></script>
-  <title>skbx — packet paths, with receipts</title>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebPage",
+        "@id": "https://copyleftdev.github.io/skbx/#webpage",
+        "url": "https://copyleftdev.github.io/skbx/",
+        "name": "skbx — Linux packet tracing with replayable eBPF evidence",
+        "description": "skbx traces Linux packet paths through kernel functions, TC, XDP, tunnels, transforms, and drops, then preserves the bounded evidence for deterministic replay.",
+        "inLanguage": "en",
+        "mainEntity": {
+          "@id": "https://copyleftdev.github.io/skbx/#software"
+        },
+        "primaryImageOfPage": {
+          "@id": "https://copyleftdev.github.io/skbx/#social-card"
+        }
+      },
+      {
+        "@type": "ImageObject",
+        "@id": "https://copyleftdev.github.io/skbx/#social-card",
+        "url": "https://copyleftdev.github.io/skbx/assets/skbx-social-card.png",
+        "contentUrl": "https://copyleftdev.github.io/skbx/assets/skbx-social-card.png",
+        "width": 1200,
+        "height": 630,
+        "caption": "skbx packet flight recorder route through Linux kernel hooks"
+      },
+      {
+        "@type": ["SoftwareApplication", "SoftwareSourceCode"],
+        "@id": "https://copyleftdev.github.io/skbx/#software",
+        "name": "skbx",
+        "alternateName": "skbx packet flight recorder",
+        "description": "An open-source Linux packet-path flight recorder built with Rust and CO-RE eBPF. It captures bounded kernel-networking evidence, assigns stable handles, reconstructs routes, and reports observation loss explicitly.",
+        "url": "https://copyleftdev.github.io/skbx/",
+        "codeRepository": "https://github.com/copyleftdev/skbx",
+        "downloadUrl": "https://github.com/copyleftdev/skbx",
+        "installUrl": "https://github.com/copyleftdev/skbx#install-from-source",
+        "image": {
+          "@id": "https://copyleftdev.github.io/skbx/#social-card"
+        },
+        "applicationCategory": "DeveloperApplication",
+        "applicationSubCategory": "Linux packet tracing and eBPF network observability",
+        "operatingSystem": "Linux on x86_64 or arm64",
+        "runtimePlatform": "Linux with kernel BTF and BPF/perf capabilities for live capture",
+        "softwareVersion": "0.1.0",
+        "programmingLanguage": ["Rust", "C", "eBPF"],
+        "license": "https://github.com/copyleftdev/skbx/blob/main/LICENSE",
+        "author": {
+          "@type": "Organization",
+          "name": "copyleftdev",
+          "url": "https://github.com/copyleftdev"
+        },
+        "offers": {
+          "@type": "Offer",
+          "price": 0,
+          "priceCurrency": "USD",
+          "availability": "https://schema.org/InStock"
+        },
+        "featureList": [
+          "BTF-discovered Linux kernel packet probes",
+          "TC and XDP program observations",
+          "SKB lineage across clone, copy, COW, and XDP transitions",
+          "Tunnel and inner-packet filtering",
+          "Stable event and route handles",
+          "Deterministic rootless replay",
+          "Explicit capture loss and completeness telemetry",
+          "Machine-readable commands, schemas, limits, and invariants"
+        ],
+        "keywords": "Linux packet tracing, eBPF observability, SKB tracing, packet drop debugging, XDP tracing, TC tracing, pwru alternative"
+      }
+    ]
+  }
+  </script>
+  <title>skbx — Linux packet tracing with replayable eBPF evidence</title>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to packet evidence</a>
@@ -32,6 +118,7 @@
     <nav aria-label="Primary navigation">
       <a href="#flight">Trace a packet</a>
       <a href="#contract">Evidence contract</a>
+      <a href="guides/debug-linux-packet-drops.html">Field guide</a>
       <a class="nav-github" href="https://github.com/copyleftdev/skbx">GitHub <span aria-hidden="true">↗</span></a>
     </nav>
   </header>
@@ -100,7 +187,7 @@
         <h2 id="incident-title">“The load balancer sent it.<br>The pod never saw it.”</h2>
         <p>There are a thousand places for certainty to disappear between those two sentences. skbx turns the gap into an ordered evidence stream.</p>
       </div>
-      <div class="incident-verdict" aria-label="Incident question">
+      <div class="incident-verdict">
         <span>Question</span>
         <strong>Where, exactly?</strong>
       </div>
@@ -242,6 +329,31 @@
       </div>
     </section>
 
+    <section class="field-guide" aria-labelledby="field-guide-title">
+      <div class="field-guide-index" aria-hidden="true">
+        <span>FIELD GUIDE / 01</span>
+        <strong>ip_rcv → ?</strong>
+      </div>
+      <div class="field-guide-copy">
+        <p class="section-kicker">Operational search, answered with evidence</p>
+        <h2 id="field-guide-title">How do you debug a packet drop inside Linux?</h2>
+        <p>
+          Diagnose the host, resolve the exact eBPF attachment plan, capture a
+          bounded packet window, verify its reliability footer, and replay the
+          route without root. The field guide turns “the pod never saw it” into
+          a reproducible investigation.
+        </p>
+        <div class="field-guide-terms">
+          <span>SKB tracing</span>
+          <span>TC / XDP</span>
+          <span>kernel BTF</span>
+          <span>packet drops</span>
+          <span>rootless replay</span>
+        </div>
+        <a class="primary-link" href="guides/debug-linux-packet-drops.html">Open the Linux packet-drop guide <span aria-hidden="true">→</span></a>
+      </div>
+    </section>
+
     <section class="agent-contract" aria-labelledby="agent-title">
       <div class="agent-prompt" aria-hidden="true">
         <span class="prompt-mark">agent@host</span>
@@ -263,8 +375,8 @@
       <p class="section-kicker">Start with the host, not a hypothesis.</p>
       <h2 id="install-title">Trace your first packet.</h2>
       <div class="install-command">
-        <code><span>$</span> git clone https://github.com/copyleftdev/skbx.git</code>
-        <button type="button" data-copy="git clone https://github.com/copyleftdev/skbx.git" aria-label="Copy git clone command">Copy</button>
+        <code><span>$</span> cargo install --git https://github.com/copyleftdev/skbx --locked skbx-cli</code>
+        <button type="button" data-copy="cargo install --git https://github.com/copyleftdev/skbx --locked skbx-cli" aria-label="Copy cargo install command">Copy</button>
       </div>
       <div class="install-links">
         <a class="primary-link" href="https://github.com/copyleftdev/skbx">Inspect the source <span aria-hidden="true">↗</span></a>
@@ -280,6 +392,8 @@
     </a>
     <p>Packet paths, with receipts.</p>
     <div>
+      <a href="guides/debug-linux-packet-drops.html">Field guide</a>
+      <a href="llms.txt">AI / crawler brief</a>
       <a href="https://github.com/copyleftdev/skbx/blob/main/LICENSE">AGPL-3.0</a>
       <a href="https://github.com/copyleftdev/skbx/blob/main/CONTRIBUTING.md">Contribute</a>
       <a href="https://github.com/copyleftdev/skbx/issues">Issues</a>
