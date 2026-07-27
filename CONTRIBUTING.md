@@ -46,7 +46,6 @@ On Ubuntu:
 
 ```console
 sudo apt-get install "linux-tools-$(uname -r)" clang llvm libelf-dev libpcap-dev pkg-config
-export PATH="/usr/lib/linux-tools/$(uname -r):$PATH"
 ```
 
 On Debian:
@@ -54,6 +53,10 @@ On Debian:
 ```console
 sudo apt-get install bpftool clang llvm libelf-dev libpcap-dev pkg-config
 ```
+
+If a vendor-specific Ubuntu kernel-tools package omits `bpftool`, install
+`linux-tools-generic` and put the directory containing its `bpftool` binary
+first on `PATH`.
 
 Then build:
 

@@ -22,9 +22,11 @@ jobs:
       - name: Install eBPF build prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install --yes "linux-tools-$(uname -r)" clang llvm libelf-dev libpcap-dev pkg-config
-          echo "/usr/lib/linux-tools/$(uname -r)" >> "$GITHUB_PATH"
-          "/usr/lib/linux-tools/$(uname -r)/bpftool" version
+          sudo apt-get install --yes linux-tools-generic clang llvm libelf-dev libpcap-dev pkg-config
+          bpftool_bin="$(find /usr/lib/linux-tools -type f -name bpftool -print -quit)"
+          test -n "$bpftool_bin"
+          echo "$(dirname "$bpftool_bin")" >> "$GITHUB_PATH"
+          "$bpftool_bin" version
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
