@@ -70,9 +70,9 @@ filter, a tracked identity, or a stack association. Named interfaces are
 resolved in the namespace selected by `--filter-netns`, and device-less
 output SKBs fall back to their socket namespace.
 
-It does **not yet** claim full `pwru` parity. TC/XDP structure dumps,
-unrestricted expression syntax and universal XDP-to-SKB lineage across copying
-drivers remain explicit gaps.
+It does **not yet** claim full `pwru` parity. Unrestricted expression syntax,
+perfect text-column compatibility, BPF recursion-miss telemetry and universal
+XDP-to-SKB lineage across copying drivers remain explicit gaps.
 
 ## Commands
 
@@ -97,7 +97,8 @@ sudo skbx capture --probe ip_rcv \
 sudo skbx capture --probe ip_rcv --output-skb \
   --output-skb-shared-info --output trace.jsonl
 sudo skbx capture --filter-trace-tc \
-  --output-skb-metadata 'skb->mark' --output trace.jsonl
+  --output-skb-metadata 'skb->mark' --output-skb \
+  --output-skb-shared-info --output trace.jsonl
 sudo skbx capture --filter-trace-xdp \
   --filter-xdp-expr 'xdp->frame_sz >= 1' \
   --output-xdp-metadata 'xdp->frame_sz' \
@@ -173,7 +174,8 @@ scripts/live-btf-dump-test.sh target/debug/skbx` proves atomic `sk_buff` and
 shared-info renderings alongside an existing metadata projection. `sudo
 scripts/live-tc-program-test.sh target/debug/skbx` loads an isolated TC
 classifier and proves BTF entry discovery, dynamic fentry attachment, exact
-program identity and read-clean SKB metadata. `sudo
+program identity, read-clean SKB metadata and atomic `sk_buff` plus
+`skb_shared_info` renderings. `sudo
 scripts/live-xdp-program-test.sh target/debug/skbx` proves dynamic-only XDP
 attachment with exact paired entry/exit identity, decoded `XDP_PASS` action,
 L2 pcap filtering, tuple decoding and target-BTF-checked `xdp_buff` filters and

@@ -52,6 +52,8 @@ ip netns exec "${NS_A}" tc filter add dev "${DEV_A}" egress \
 "${SKBX_BINARY}" capture \
     --filter-trace-tc \
     --output-skb-metadata 'skb->mark' \
+    --output-skb \
+    --output-skb-shared-info \
     --duration 4 \
     --max-events 512 \
     --ready-file "${READY}" \
@@ -75,6 +77,7 @@ CAPTURE_PID=
 
 jq -e '
     select(.kind == "capture_start") |
+    .btf_dump_types == ["sk_buff", "skb_shared_info"] and
     (.bpf_programs | length) >= 1 and
     any(
         .bpf_programs[];
@@ -97,6 +100,15 @@ jq -e '
     .metadata[0].expression == "skb->mark" and
     .metadata[0].read_error == null and
     .metadata[0].value.value == .packet.mark and
+    (.btf_dumps | length) == 2 and
+    ([.btf_dumps[].type_name] | sort) == ["sk_buff", "skb_shared_info"] and
+    (.btf_dumps | all(
+        .rendered != null and
+        (.rendered | length) > 0 and
+        .bytes_required > 0 and
+        .bytes_captured > 0 and
+        .read_error == null
+    )) and
     (.packet.read_errors | length) == 0
 ' "${TRACE}" >/dev/null
 

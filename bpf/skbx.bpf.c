@@ -261,6 +261,13 @@ struct skbx_program_metadata_trace_event {
     struct skbx_metadata metadata;
 };
 
+struct skbx_program_btf_trace_event {
+    struct skbx_program_metadata_trace_event record;
+    struct skbx_btf_dumps dumps;
+    __u8 components;
+    __u8 _pad[7];
+};
+
 _Static_assert(sizeof(struct skbx_trace_event) == 224,
                "base trace record ABI changed");
 _Static_assert(sizeof(struct skbx_map_trace_event) == 320,
@@ -281,6 +288,8 @@ _Static_assert(sizeof(struct skbx_program_trace_event) == 312,
                "BPF program trace record ABI changed");
 _Static_assert(sizeof(struct skbx_program_metadata_trace_event) == 352,
                "BPF program metadata trace record ABI changed");
+_Static_assert(sizeof(struct skbx_program_btf_trace_event) == 8568,
+               "BPF program BTF trace record ABI changed");
 
 struct kernel_stats {
     __u64 reserve_failures;
@@ -1651,6 +1660,32 @@ int skbx_trace_tc(__u64 *ctx)
 
     if (!match)
         return 0;
+    if (CONFIG.output_skb_dump || CONFIG.output_shared_info_dump) {
+        __u32 key = 0;
+        struct skbx_btf_trace_event *scratch =
+            bpf_map_lookup_elem(&btf_scratch, &key);
+        struct skbx_program_btf_trace_event *record =
+            (struct skbx_program_btf_trace_event *)scratch;
+
+        if (!record) {
+            if (counters)
+                counters->reserve_failures++;
+            return 0;
+        }
+        __builtin_memset(&record->record, 0, sizeof(record->record));
+        record->components = 0;
+        fill_program_trace_event(ctx, skb, match, identity,
+                                 &record->record.program, counters);
+        if (CONFIG.metadata_count) {
+            fill_metadata(skb, &record->record.metadata, counters);
+            record->components |= BTF_RECORD_COMPONENT_METADATA;
+        }
+        fill_btf_dumps(skb, &record->dumps, counters);
+        if (bpf_ringbuf_output(&events, record, sizeof(*record), 0) &&
+            counters)
+            counters->reserve_failures++;
+        return 0;
+    }
     if (CONFIG.metadata_count) {
         struct skbx_program_metadata_trace_event *record =
             bpf_ringbuf_reserve(&events, sizeof(*record), 0);

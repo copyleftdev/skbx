@@ -49,7 +49,6 @@ pub struct Defaults {
 impl Describe {
     pub fn current(version: &'static str) -> Self {
         let supported = CapabilityStatus::Supported;
-        let partial = CapabilityStatus::Partial;
         Self {
             name: "skbx",
             version,
@@ -214,8 +213,8 @@ impl Describe {
                     name: "atomic-btf-structure-dumps",
                     status: supported.clone(),
                     requires: "target kernel BTF and BPF_FUNC_snprintf_btf",
-                    cost: "one 8576-byte atomic record per event only when requested",
-                    description: "render bounded sk_buff and skb_shared_info evidence with required/captured byte counts, truncation and helper errors",
+                    cost: "one 8576-byte probe or 8568-byte TC atomic record per event only when requested",
+                    description: "render bounded sk_buff and skb_shared_info evidence with required/captured byte counts, truncation and helper errors, including dynamic TC observations",
                 },
                 Capability {
                     name: "skb-drop-reason",
@@ -240,10 +239,10 @@ impl Describe {
                 },
                 Capability {
                     name: "tc-xdp-observation",
-                    status: partial,
+                    status: supported.clone(),
                     requires: "BPF program enumeration, program BTF and fentry",
                     cost: "one TC entry link or paired XDP entry/exit links per eligible program",
-                    description: "emit exact TC entry and paired XDP entry/exit identity with decoded action; dynamic BTF structure dumps remain planned",
+                    description: "emit exact TC entry and paired XDP entry/exit identity with decoded action; TC observations atomically compose metadata and BTF structure dumps",
                 },
                 Capability {
                     name: "btf-checked-xdp-metadata-projections",
@@ -1159,11 +1158,9 @@ mod tests {
         assert!(describe.capabilities.iter().any(|c| {
             c.name == "atomic-btf-structure-dumps" && c.status == CapabilityStatus::Supported
         }));
-        assert!(
-            describe.capabilities.iter().any(|c| {
-                c.name == "tc-xdp-observation" && c.status == CapabilityStatus::Partial
-            })
-        );
+        assert!(describe.capabilities.iter().any(|c| {
+            c.name == "tc-xdp-observation" && c.status == CapabilityStatus::Supported
+        }));
         assert!(describe.capabilities.iter().any(|c| {
             c.name == "btf-checked-xdp-metadata-projections"
                 && c.status == CapabilityStatus::Supported

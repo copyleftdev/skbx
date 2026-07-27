@@ -568,8 +568,8 @@ fn capture(
     if route_cache_entries == 0 {
         bail!("capture --route-cache-entries must be greater than zero");
     }
-    if (filter_trace_tc || filter_trace_xdp) && (output_skb || output_skb_shared_info) {
-        bail!("dynamic BPF program tracing does not yet support BTF structure dumps");
+    if filter_trace_xdp && (output_skb || output_skb_shared_info) {
+        bail!("XDP program contexts do not contain sk_buff structures to dump");
     }
     if !output_xdp_metadata.is_empty() && !filter_trace_xdp {
         bail!("--output-xdp-metadata requires --filter-trace-xdp");
