@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#12150f">
+  <meta name="description" content="Trace what happens when Linux opens a website: prove the local kernel path with eBPF, bound the ISP segment, measure DNS, TCP, TLS, and TTFB, and correlate a target-host capture.">
+  <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+  <meta name="author" content="copyleftdev">
+  <meta property="og:title" content="Trace a website request across your Linux host, ISP, and target">
+  <meta property="og:description" content="A proof-versus-inference field guide for following one HTTPS request from a Linux client to a target server.">
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://copyleftdev.github.io/skbx/guides/trace-a-website-request.html">
+  <meta property="og:site_name" content="skbx">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:image" content="https://copyleftdev.github.io/skbx/assets/skbx-social-card.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="skbx packet flight recorder route through Linux kernel hooks">
+  <meta property="article:published_time" content="2026-07-27">
+  <meta property="article:modified_time" content="2026-07-27">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Trace a website request: Linux host → ISP → target">
+  <meta name="twitter:description" content="Prove the local packet path, bound the transit gap, and correlate target-host evidence.">
+  <meta name="twitter:image" content="https://copyleftdev.github.io/skbx/assets/skbx-social-card.png">
+  <meta name="twitter:image:alt" content="skbx packet flight recorder route through Linux kernel hooks">
+  <link rel="canonical" href="https://copyleftdev.github.io/skbx/guides/trace-a-website-request.html">
+  <link rel="icon" href="../assets/skbx-flight-mark.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Recursive:slnt,wght@-15..0,300..1000&amp;family=Source+Serif+4:opsz,wght@8..60,300..900&amp;display=swap">
+  <link href="https://fonts.googleapis.com/css2?family=Recursive:slnt,wght@-15..0,300..1000&amp;family=Source+Serif+4:opsz,wght@8..60,300..900&amp;display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+  <noscript><link href="https://fonts.googleapis.com/css2?family=Recursive:slnt,wght@-15..0,300..1000&amp;family=Source+Serif+4:opsz,wght@8..60,300..900&amp;display=swap" rel="stylesheet"></noscript>
+  <link rel="stylesheet" href="../styles.css">
+  <script src="../site.js" defer></script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "TechArticle",
+        "@id": "https://copyleftdev.github.io/skbx/guides/trace-a-website-request.html#article",
+        "mainEntityOfPage": "https://copyleftdev.github.io/skbx/guides/trace-a-website-request.html",
+        "headline": "How to trace a website request across your Linux host, ISP, and target server",
+        "description": "A practical workflow for resolving a target, proving the local Linux kernel path with eBPF, measuring DNS, TCP, TLS, and time to first byte, bounding what happened in transit, and correlating target-host evidence.",
+        "image": "https://copyleftdev.github.io/skbx/assets/skbx-social-card.png",
+        "datePublished": "2026-07-27",
+        "dateModified": "2026-07-27",
+        "author": {
+          "@type": "Organization",
+          "name": "copyleftdev",
+          "url": "https://github.com/copyleftdev"
+        },
+        "publisher": {
+          "@type": "Organization",
+          "name": "copyleftdev",
+          "url": "https://github.com/copyleftdev"
+        },
+        "about": [
+          "website request path",
+          "Linux networking",
+          "ISP visibility",
+          "HTTPS tracing",
+          "eBPF packet tracing"
+        ],
+        "keywords": "trace website request, Linux network path, ISP routing, HTTPS latency, DNS TCP TLS TTFB, eBPF packet tracing, target server debugging",
+        "proficiencyLevel": "Intermediate",
+        "dependencies": "Linux on x86_64 or arm64 with kernel BTF; root or BPF/perf capabilities for live capture; target-host access for end-to-end kernel evidence"
+      },
+      {
+        "@type": "BreadcrumbList",
+        "@id": "https://copyleftdev.github.io/skbx/guides/trace-a-website-request.html#breadcrumbs",
+        "itemListElement": [
+          {
+            "@type": "ListItem",
+            "position": 1,
+            "name": "skbx",
+            "item": "https://copyleftdev.github.io/skbx/"
+          },
+          {
+            "@type": "ListItem",
+            "position": 2,
+            "name": "Trace a website request",
+            "item": "https://copyleftdev.github.io/skbx/guides/trace-a-website-request.html"
+          }
+        ]
+      }
+    ]
+  }
+  </script>
+  <title>Trace a website request: Linux host, ISP, and target | skbx</title>
+</head>
+<body class="guide-page website-guide">
+  <a class="skip-link" href="#guide-main">Skip to the field guide</a>
+  <div class="reading-progress" aria-hidden="true"><span data-reading-progress></span></div>
+
+  <header class="site-header guide-header" data-header>
+    <a class="brand" href="../">
+      <img src="../assets/skbx-flight-mark.svg" alt="" width="36" height="36">
+      <span>skbx</span>
+      <span class="brand-state">field guide / 02</span>
+    </a>
+    <nav aria-label="Guide navigation">
+      <a href="../">Overview</a>
+      <a href="#local-host">Run the trace</a>
+      <a class="nav-github" href="https://github.com/copyleftdev/skbx">GitHub <span aria-hidden="true">↗</span></a>
+    </nav>
+  </header>
+
+  <main id="guide-main">
+    <article class="guide">
+      <header class="guide-hero">
+        <div class="guide-hero-copy">
+          <div class="guide-breadcrumb">
+            <a href="../">skbx</a>
+            <span aria-hidden="true">/</span>
+            <span>field guide 02</span>
+          </div>
+          <p class="section-kicker">Website request path</p>
+          <h1>Your browser said “loading.” <em>What actually happened?</em></h1>
+          <p class="guide-deck">
+            Follow one controlled HTTPS request from your Linux kernel, across
+            the part of the Internet you can only infer, to a target host you
+            may—or may not—control.
+          </p>
+          <div class="guide-hero-actions">
+            <a class="primary-link" href="#vantage">Map the evidence boundary <span aria-hidden="true">↓</span></a>
+            <a class="text-link" href="#local-host">Start the local trace</a>
+          </div>
+        </div>
+        <aside class="guide-brief" aria-label="Website request visibility map">
+          <div class="guide-trace vantage-trace">
+            <div class="guide-trace-head">
+              <span>REQUEST ROUTE</span>
+              <span class="recording"><i></i> 3 VANTAGES</span>
+            </div>
+            <ol>
+              <li class="is-local"><span>01</span><strong>your host</strong><em>prove</em></li>
+              <li class="is-conditional"><span>02</span><strong>gateway</strong><em>prove if controlled</em></li>
+              <li class="is-inference"><span>03</span><strong>ISP / transit</strong><em>infer</em></li>
+              <li class="is-conditional"><span>04</span><strong>target edge</strong><em>prove if controlled</em></li>
+              <li class="is-verdict"><span>05</span><strong>comparison</strong><em>narrow the fault</em></li>
+            </ol>
+          </div>
+          <dl class="guide-facts">
+            <div><dt>Reproducer</dt><dd>curl / HTTPS</dd></div>
+            <div><dt>Transport</dt><dd>TCP 443 / IPv4</dd></div>
+            <div><dt>Local truth</dt><dd>skbx traceq</dd></div>
+            <div><dt>Transit truth</dt><dd>bounded inference</dd></div>
+          </dl>
+          <p class="guide-reviewed">Dogfooded 2026-07-27 · <code>traceq/0.1.0</code></p>
+        </aside>
+      </header>
+
+      <div class="guide-layout">
+        <nav class="guide-toc" aria-label="Field guide sections">
+          <div class="guide-toc-head">
+            <p>Flight plan</p>
+            <span data-guide-count>00 / 08</span>
+          </div>
+          <ol>
+            <li><a href="#vantage" data-guide-link><span>00</span> Evidence boundary</a></li>
+            <li><a href="#target" data-guide-link><span>01</span> Pin the target</a></li>
+            <li><a href="#local-host" data-guide-link><span>02</span> Prove the local path</a></li>
+            <li><a href="#timings" data-guide-link><span>03</span> Measure the exchange</a></li>
+            <li><a href="#isp" data-guide-link><span>04</span> Bound the ISP</a></li>
+            <li><a href="#target-host" data-guide-link><span>05</span> Add target evidence</a></li>
+            <li><a href="#compare" data-guide-link><span>06</span> Compare both ends</a></li>
+            <li><a href="#visibility" data-guide-link><span>07</span> Know what is visible</a></li>
+            <li><a href="#next" data-guide-link><span>08</span> Continue</a></li>
+          </ol>
+          <p class="guide-toc-current" data-guide-current>Evidence boundary</p>
+        </nav>
+
+        <div class="guide-content">
+          <section id="vantage" aria-labelledby="vantage-title" data-guide-section>
+            <p class="section-kicker">The governing idea</p>
+            <h2 id="vantage-title">Every claim needs a vantage point.</h2>
+            <p>
+              A vantage point is the machine or network boundary where you
+              collected evidence. Running skbx on your laptop proves what the
+              packet did inside that laptop. It does not grant visibility into
+              your ISP or a third-party server. Add skbx to a Linux gateway or
+              target host and each becomes another provable boundary.
+            </p>
+            <div class="truth-map">
+              <article class="truth-zone is-proven">
+                <span>01 / YOUR LINUX HOST</span>
+                <strong>Prove</strong>
+                <p>Resolved address, chosen route, kernel hooks, interface, tuple, packet lineage, and capture reliability.</p>
+              </article>
+              <article class="truth-zone is-inferred">
+                <span>02 / ISP + TRANSIT</span>
+                <strong>Infer</strong>
+                <p>Responsive hops, path MTU, timing changes, and the interval between observed endpoints—not every router or cause.</p>
+              </article>
+              <article class="truth-zone is-remote">
+                <span>03 / TARGET HOST</span>
+                <strong>Prove with access</strong>
+                <p>Ingress hooks, firewall and socket-delivery path, response egress, and target-side loss telemetry.</p>
+              </article>
+            </div>
+            <aside class="guide-callout" aria-labelledby="boundary-rule-title">
+              <span class="guide-callout-mark" aria-hidden="true">!</span>
+              <div>
+                <strong id="boundary-rule-title">Boundary rule</strong>
+                <p>Absence at a vantage is not proof of loss elsewhere unless the capture window and reliability footer are complete.</p>
+              </div>
+            </aside>
+          </section>
+
+          <section id="target" aria-labelledby="target-title" data-guide-section>
+            <span class="guide-step">01 / PIN THE TARGET</span>
+            <h2 id="target-title">Turn a hostname into one controlled destination.</h2>
+            <p>
+              A website name may resolve to several IPv4 and IPv6 addresses,
+              often at a CDN or anycast edge rather than the origin server.
+              Choose one IPv4 address for this experiment, then ask Linux which
+              gateway, interface, and source address it would use.
+            </p>
+            <div class="guide-code-block">
+              <div class="guide-code-toolbar">
+                <span>shell / resolve + route</span>
+                <button type="button" data-copy="TARGET_HOST=example.com&#10;TARGET_IP=$(getent ahostsv4 &quot;$TARGET_HOST&quot; | awk 'NR == 1 {print $1}')&#10;printf 'target=%s ip=%s\n' &quot;$TARGET_HOST&quot; &quot;$TARGET_IP&quot;&#10;ip route get &quot;$TARGET_IP&quot;" data-copy-success="Target setup copied." aria-label="Copy target resolution and route commands">Copy</button>
+              </div>
+              <pre><code>TARGET_HOST=example.com
+TARGET_IP=$(getent ahostsv4 "$TARGET_HOST" | awk 'NR == 1 {print $1}')
+printf 'target=%s ip=%s\n' "$TARGET_HOST" "$TARGET_IP"
+ip route get "$TARGET_IP"</code></pre>
+            </div>
+            <dl class="evidence-ledger">
+              <div><dt><code>via</code></dt><dd>Your next-hop gateway—not “the ISP.”</dd></div>
+              <div><dt><code>dev</code></dt><dd>The local interface Linux selected.</dd></div>
+              <div><dt><code>src</code></dt><dd>The local source address before upstream NAT.</dd></div>
+              <div><dt>target IP</dt><dd>The edge selected for this run; a later lookup may differ.</dd></div>
+            </dl>
+          </section>
+
+          <section id="local-host" aria-labelledby="local-host-title" data-guide-section>
+            <span class="guide-step">02 / PROVE THE LOCAL PATH</span>
+            <h2 id="local-host-title">Record request egress and response ingress.</h2>
+            <p>
+              Check privilege and kernel prerequisites first. Then resolve the
+              exact probes without attaching. These functions cover IPv4
+              local output, device queueing, IPv4 receive, and TCP receive on
+              a typical host; the plan tells you what your target kernel
+              actually exposes.
+            </p>
+            <div class="guide-code-block">
+              <div class="guide-code-toolbar">
+                <span>shell / readiness + plan</span>
+                <button type="button" data-copy="skbx doctor --json&#10;skbx plan --probe ip_local_out --probe ip_output --probe __dev_queue_xmit --probe ip_rcv --probe tcp_v4_rcv --json" data-copy-success="Readiness and probe plan copied." aria-label="Copy host readiness and probe plan commands">Copy</button>
+              </div>
+              <pre><code>skbx doctor --json
+
+skbx plan \
+  --probe ip_local_out \
+  --probe ip_output \
+  --probe __dev_queue_xmit \
+  --probe ip_rcv \
+  --probe tcp_v4_rcv \
+  --json</code></pre>
+            </div>
+            <p>
+              Start a bounded capture in terminal A. Keep the pcap expression
+              pinned to the address from step 01 so unrelated browser tabs do
+              not contaminate the evidence.
+            </p>
+            <div class="guide-code-block">
+              <div class="guide-code-toolbar">
+                <span>terminal A / local capture</span>
+                <button type="button" data-copy="sudo skbx capture \&#10;  --probe ip_local_out \&#10;  --probe ip_output \&#10;  --probe __dev_queue_xmit \&#10;  --probe ip_rcv \&#10;  --probe tcp_v4_rcv \&#10;  --filter-track-skb \&#10;  --duration 15 \&#10;  --ready-file /tmp/skbx-web.ready \&#10;  --output web-trace.jsonl \&#10;  &quot;host $TARGET_IP and tcp port 443&quot;" data-copy-success="Local capture command copied." aria-label="Copy website capture command">Copy</button>
+              </div>
+              <pre><code>sudo skbx capture \
+  --probe ip_local_out \
+  --probe ip_output \
+  --probe __dev_queue_xmit \
+  --probe ip_rcv \
+  --probe tcp_v4_rcv \
+  --filter-track-skb \
+  --duration 15 \
+  --ready-file /tmp/skbx-web.ready \
+  --output web-trace.jsonl \
+  "host $TARGET_IP and tcp port 443"</code></pre>
+            </div>
+            <aside class="guide-callout" aria-labelledby="privilege-title">
+              <span class="guide-callout-mark" aria-hidden="true">!</span>
+              <div>
+                <strong id="privilege-title">Privilege is part of the evidence</strong>
+                <p>If <code>doctor</code> reports no root or BPF/perf capabilities, stop before capture. Route and timing checks still work; kernel-event claims do not.</p>
+              </div>
+            </aside>
+          </section>
+
+          <section id="timings" aria-labelledby="timings-title" data-guide-section>
+            <span class="guide-step">03 / REPRODUCE + MEASURE</span>
+            <h2 id="timings-title">Make one request to the exact IP you traced.</h2>
+            <p>
+              When terminal A reports that the ready file exists, use
+              <code>--resolve</code> in terminal B. It keeps the original
+              hostname for TLS and HTTP while forcing curl to use the chosen
+              address. HTTP/1.1 makes this a deterministic TCP 443 experiment;
+              a browser may instead reuse a connection or choose HTTP/3 over
+              QUIC and UDP.
+            </p>
+            <div class="guide-code-block">
+              <div class="guide-code-toolbar">
+                <span>terminal B / controlled request</span>
+                <button type="button" data-copy="test -e /tmp/skbx-web.ready &amp;&amp; curl --http1.1 --resolve &quot;$TARGET_HOST:443:$TARGET_IP&quot; -sS -o /dev/null -w $'remote_ip=%{remote_ip}\\ndns=%{time_namelookup}s\\nconnect=%{time_connect}s\\ntls=%{time_appconnect}s\\nttfb=%{time_starttransfer}s\\ntotal=%{time_total}s\\nhttp=%{http_code}\\n' &quot;https://$TARGET_HOST/&quot;" data-copy-success="Controlled request copied." aria-label="Copy controlled curl request">Copy</button>
+              </div>
+              <pre><code>test -e /tmp/skbx-web.ready &amp;&amp; \
+curl --http1.1 \
+  --resolve "$TARGET_HOST:443:$TARGET_IP" \
+  -sS -o /dev/null \
+  -w $'remote_ip=%{remote_ip}\ndns=%{time_namelookup}s\nconnect=%{time_connect}s\ntls=%{time_appconnect}s\nttfb=%{time_starttransfer}s\ntotal=%{time_total}s\nhttp=%{http_code}\n' \
+  "https://$TARGET_HOST/"</code></pre>
+            </div>
+            <div class="timing-ruler">
+              <div><span>DNS</span><strong><code>time_namelookup</code></strong><p>Name resolution completed.</p></div>
+              <div><span>TCP</span><strong><code>time_connect</code></strong><p>The TCP connection completed.</p></div>
+              <div><span>TLS</span><strong><code>time_appconnect</code></strong><p>The secure handshake completed.</p></div>
+              <div><span>FIRST BYTE</span><strong><code>time_starttransfer</code></strong><p>The first response byte arrived, including server work.</p></div>
+            </div>
+            <p>
+              These values are cumulative from curl’s start. Subtract adjacent
+              values to estimate each phase; do not label all time before the
+              first byte “ISP latency.”
+            </p>
+            <div class="guide-code-block">
+              <div class="guide-code-toolbar">
+                <span>shell / verify + replay</span>
+                <button type="button" data-copy="tail -n 1 web-trace.jsonl | jq .&#10;skbx replay web-trace.jsonl --format json" data-copy-success="Trace verification and replay copied." aria-label="Copy trace verification and replay commands">Copy</button>
+              </div>
+              <pre><code>tail -n 1 web-trace.jsonl | jq .
+skbx replay web-trace.jsonl --format json</code></pre>
+            </div>
+          </section>
+
+          <section id="isp" aria-labelledby="isp-title" data-guide-section>
+            <span class="guide-step">04 / BOUND THE ISP</span>
+            <h2 id="isp-title">Probe transit. Do not promote it to proof.</h2>
+            <p>
+              <code>tracepath</code> asks routers along the path to reveal
+              themselves and can discover path MTU. <code>mtr</code> repeats
+              hop probes to show how responses vary. Either may encounter
+              silent or rate-limited routers, asymmetric routes, tunnels, or
+              anycast edges.
+            </p>
+            <div class="guide-code-block">
+              <div class="guide-code-toolbar">
+                <span>shell / transit probes</span>
+                <button type="button" data-copy="tracepath -n &quot;$TARGET_IP&quot;&#10;mtr --report --report-cycles 20 &quot;$TARGET_IP&quot;" data-copy-success="Transit probe commands copied." aria-label="Copy tracepath and mtr commands">Copy</button>
+              </div>
+              <pre><code>tracepath -n "$TARGET_IP"
+mtr --report --report-cycles 20 "$TARGET_IP"</code></pre>
+            </div>
+            <div class="guide-questions transit-rules">
+              <article>
+                <h3>A hop does not answer.</h3>
+                <p>That router may still forward production traffic. Silence is not proof that the hop dropped the HTTPS request.</p>
+              </article>
+              <article>
+                <h3>An intermediate hop shows loss.</h3>
+                <p>If later hops answer normally, control-plane rate limiting is more likely than equivalent forwarding loss.</p>
+              </article>
+              <article>
+                <h3>The path changes between runs.</h3>
+                <p>Load balancing, anycast, routing policy, or a different resolved address may have selected another path.</p>
+              </article>
+              <article>
+                <h3>You control a Linux gateway.</h3>
+                <p>Run skbx there with <code>ip_forward</code>, <code>nf_hook_slow</code>, and <code>__dev_queue_xmit</code> to turn the home/edge gateway from inference into a second vantage.</p>
+              </article>
+            </div>
+          </section>
+
+          <section id="target-host" aria-labelledby="target-host-title" data-guide-section>
+            <span class="guide-step">05 / ADD TARGET EVIDENCE</span>
+            <h2 id="target-host-title">Instrument the far end—if it is yours.</h2>
+            <p>
+              A third-party website is an evidence boundary: you cannot run
+              skbx there. If you control the server or CDN-facing Linux edge,
+              synchronize its clock, begin a second bounded capture, then make
+              the same <code>curl --resolve</code> request from the client.
+            </p>
+            <div class="guide-code-block">
+              <div class="guide-code-toolbar">
+                <span>target host / ingress capture</span>
+                <button type="button" data-copy="sudo skbx capture \&#10;  --probe ip_rcv \&#10;  --probe ip_local_deliver \&#10;  --probe tcp_v4_rcv \&#10;  --probe tcp_v4_do_rcv \&#10;  --filter-track-skb \&#10;  --timestamp absolute \&#10;  --duration 20 \&#10;  --output target-trace.jsonl \&#10;  &quot;host &lt;CLIENT_PUBLIC_IP&gt; and tcp port 443&quot;" data-copy-success="Target-host capture copied." aria-label="Copy target-host capture command">Copy</button>
+              </div>
+              <pre><code>sudo skbx capture \
+  --probe ip_rcv \
+  --probe ip_local_deliver \
+  --probe tcp_v4_rcv \
+  --probe tcp_v4_do_rcv \
+  --filter-track-skb \
+  --timestamp absolute \
+  --duration 20 \
+  --output target-trace.jsonl \
+  "host &lt;CLIENT_PUBLIC_IP&gt; and tcp port 443"</code></pre>
+            </div>
+            <p>
+              The target usually sees the public address after NAT, not your
+              laptop’s private source address. Correlate the two captures with
+              timestamps, protocol, ports, addresses as seen at each boundary,
+              and request timing. <code>event:</code> and <code>route:</code>
+              handles are stable within their own capture; they are not shared
+              identifiers across machines.
+            </p>
+          </section>
+
+          <section id="compare" aria-labelledby="compare-title" data-guide-section>
+            <span class="guide-step">06 / COMPARE BOTH ENDS</span>
+            <h2 id="compare-title">Convert two traces into a smaller search space.</h2>
+            <table class="decision-ledger">
+              <caption>Website request evidence interpretations</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Client evidence</th>
+                  <th scope="col">Target evidence</th>
+                  <th scope="col">Next boundary to inspect</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>No egress at planned hooks</td>
+                  <td>No ingress</td>
+                  <td><strong>Local routing, firewall, namespace, filter, or probe plan</strong></td>
+                </tr>
+                <tr>
+                  <td>Complete egress; no response</td>
+                  <td>No ingress</td>
+                  <td><strong>Gateway, transit, target edge, or wrong target address</strong></td>
+                </tr>
+                <tr>
+                  <td>Request egress</td>
+                  <td>Ingress, but no socket delivery</td>
+                  <td><strong>Target kernel, firewall, listener, or namespace path</strong></td>
+                </tr>
+                <tr>
+                  <td>Response reaches TCP receive</td>
+                  <td>Request and response complete</td>
+                  <td><strong>Browser, proxy, TLS policy, cache, or application behavior</strong></td>
+                </tr>
+                <tr>
+                  <td>Kernel path completes; TTFB is high</td>
+                  <td>Ingress-to-response gap is high</td>
+                  <td><strong>Target application, dependency, or CDN/origin handoff</strong></td>
+                </tr>
+              </tbody>
+            </table>
+            <aside class="guide-callout" aria-labelledby="correlation-title">
+              <span class="guide-callout-mark" aria-hidden="true">!</span>
+              <div>
+                <strong id="correlation-title">Correlation rule</strong>
+                <p>“The client sent it” plus “the target never observed it” narrows the interval. It does not identify which unseen network dropped it.</p>
+              </div>
+            </aside>
+          </section>
+
+          <section id="visibility" aria-labelledby="visibility-title" data-guide-section>
+            <span class="guide-step">07 / VISIBILITY + PRIVACY</span>
+            <h2 id="visibility-title">Know what each party can see.</h2>
+            <div class="visibility-matrix">
+              <article>
+                <span>YOUR HOST</span>
+                <h3>Before encryption and inside the kernel</h3>
+                <p>Your applications know the URL and content. skbx sees packet and kernel metadata, not decrypted HTTP bodies.</p>
+              </article>
+              <article>
+                <span>ISP / TRANSIT</span>
+                <h3>Metadata and traffic shape</h3>
+                <p>Networks can generally observe endpoint addresses, transport, ports, timing, and sizes. Plain DNS exposes queries; encrypted DNS changes which resolver sees them. TLS protects HTTP paths, headers, and bodies. ECH can also protect the real server name when negotiated.</p>
+              </article>
+              <article>
+                <span>TARGET EDGE</span>
+                <h3>Whatever terminates the secure connection</h3>
+                <p>A CDN or reverse proxy may be the target IP and TLS endpoint. It can see the HTTP request after decryption; the origin may receive a separate proxied request.</p>
+              </article>
+            </div>
+            <p>
+              A browser can reuse connections, race IPv4 against IPv6, consult
+              encrypted DNS, use a proxy or VPN, and choose HTTP/3 over QUIC.
+              This recipe deliberately removes those variables. To investigate
+              the browser itself, first identify its actual target address and
+              transport, then adapt the filter to TCP or UDP port 443.
+            </p>
+            <div class="guide-links reference-links">
+              <a class="text-link" href="https://curl.se/docs/manpage.html#-w">curl timing variables <span aria-hidden="true">↗</span></a>
+              <a class="text-link" href="https://man7.org/linux/man-pages/man8/tracepath.8@@iputils.html">tracepath manual <span aria-hidden="true">↗</span></a>
+              <a class="text-link" href="https://www.rfc-editor.org/rfc/rfc9114.html">HTTP/3 over QUIC <span aria-hidden="true">↗</span></a>
+              <a class="text-link" href="https://www.rfc-editor.org/rfc/rfc9849.html">TLS Encrypted ClientHello <span aria-hidden="true">↗</span></a>
+            </div>
+          </section>
+
+          <section id="next" aria-labelledby="next-title" data-guide-section>
+            <p class="section-kicker">Continue the investigation</p>
+            <h2 id="next-title">Change one variable at a time.</h2>
+            <p>
+              Repeat the controlled request against another resolved address,
+              network, protocol, or gateway vantage. Preserve every native
+              trace and its reliability footer. Once the broad boundary is
+              known, use the packet-drop guide to deepen the Linux-side probe
+              plan without inventing events between hosts.
+            </p>
+            <div class="guide-links">
+              <a class="primary-link" href="debug-linux-packet-drops.html">Open field guide 01 <span aria-hidden="true">→</span></a>
+              <a class="text-link" href="https://github.com/copyleftdev/skbx#first-packet">Run the first packet <span aria-hidden="true">↗</span></a>
+              <a class="text-link" href="https://github.com/copyleftdev/skbx/blob/main/docs/validation.md">Inspect validation gates <span aria-hidden="true">↗</span></a>
+            </div>
+          </section>
+        </div>
+      </div>
+    </article>
+  </main>
+
+  <p id="copy-status" class="guide-copy-status" role="status" aria-live="polite"></p>
+
+  <footer class="site-footer">
+    <a class="brand footer-brand" href="../">
+      <img src="../assets/skbx-flight-mark.svg" alt="" width="32" height="32">
+      <span>skbx</span>
+    </a>
+    <p>Packet paths, with receipts.</p>
+    <div>
+      <a href="../llms.txt">AI / crawler brief</a>
+      <a href="https://github.com/copyleftdev/skbx/blob/main/LICENSE">AGPL-3.0</a>
+      <a href="https://github.com/copyleftdev/skbx/issues">Issues</a>
+    </div>
+  </footer>
+</body>
+</html>

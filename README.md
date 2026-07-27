@@ -15,6 +15,11 @@
 
 **[Follow a packet through the flight recorder →](https://copyleftdev.github.io/skbx/)**
 
+Field guides:
+
+- [Trace a website request across your Linux host, ISP, and target](https://copyleftdev.github.io/skbx/guides/trace-a-website-request.html)
+- [Debug a Linux packet drop with replayable eBPF evidence](https://copyleftdev.github.io/skbx/guides/debug-linux-packet-drops.html)
+
 It observes kernel networking functions, TC/XDP programs, packet
 transformations, tunnels, drops, and selected BPF helper activity with
 Rust and CO-RE eBPF. Every observation lands in a bounded, replayable evidence

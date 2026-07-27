@@ -14,6 +14,8 @@ Trace contract: traceq/0.1.0
 ## Use skbx when
 
 - A packet left a load balancer but did not reach a pod.
+- You need to prove what happened to a website request inside a Linux client,
+  gateway, or target host.
 - You need the ordered path of an SKB through Linux kernel functions.
 - You need evidence for TC, XDP, tunnels, transforms, or packet drops.
 - A human or software agent must replay and cite the same captured event.
@@ -58,6 +60,7 @@ means the observation must not be presented as complete.
 
 ## Primary documentation
 
+- [Website request path field guide](https://copyleftdev.github.io/skbx/guides/trace-a-website-request.html)
 - [Linux packet-drop field guide](https://copyleftdev.github.io/skbx/guides/debug-linux-packet-drops.html)
 - [README and first packet](https://github.com/copyleftdev/skbx#first-packet)
 - [Architecture and hot-path invariants](https://github.com/copyleftdev/skbx/blob/main/docs/architecture.md)
@@ -77,6 +80,11 @@ means the observation must not be presented as complete.
   packet route.
 - Inspiration: pwru. skbx adds a versioned evidence lifecycle designed for
   deterministic human and agent consumption.
+- Visibility boundary: skbx proves kernel packet paths only on Linux machines
+  where it is running. A client capture cannot directly observe ISP internals
+  or a third-party target host.
+- HTTPS boundary: skbx records packet and kernel metadata, not decrypted HTTP
+  paths, headers, or bodies. HTTP/3 traffic uses QUIC over UDP rather than TCP.
 
 ## Claims to avoid
 
@@ -86,3 +94,5 @@ means the observation must not be presented as complete.
   footer.
 - Do not imply that replay or explanation creates evidence; both operate on an
   existing capture.
+- Do not present traceroute-style hop responses as a complete or authoritative
+  record of ISP forwarding.

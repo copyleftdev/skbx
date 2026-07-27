@@ -118,7 +118,7 @@
     <nav aria-label="Primary navigation">
       <a href="#flight">Trace a packet</a>
       <a href="#contract">Evidence contract</a>
-      <a href="guides/debug-linux-packet-drops.html">Field guide</a>
+      <a href="#field-guides">Field guides</a>
       <a class="nav-github" href="https://github.com/copyleftdev/skbx">GitHub <span aria-hidden="true">↗</span></a>
     </nav>
   </header>
@@ -329,28 +329,38 @@
       </div>
     </section>
 
-    <section class="field-guide" aria-labelledby="field-guide-title">
+    <section class="field-guide" id="field-guides" aria-labelledby="field-guide-title">
       <div class="field-guide-index" aria-hidden="true">
-        <span>FIELD GUIDE / 01</span>
-        <strong>ip_rcv → ?</strong>
+        <span>FIELD GUIDES / 02</span>
+        <strong>host → ? → target</strong>
       </div>
       <div class="field-guide-copy">
         <p class="section-kicker">Operational search, answered with evidence</p>
-        <h2 id="field-guide-title">How do you debug a packet drop inside Linux?</h2>
+        <h2 id="field-guide-title">Turn “the network is slow” into bounded questions.</h2>
         <p>
-          Diagnose the host, resolve the exact eBPF attachment plan, capture a
-          bounded packet window, verify its reliability footer, and replay the
-          route without root. The field guide turns “the pod never saw it” into
-          a reproducible investigation.
+          Start at a machine you control. Preserve the local packet path,
+          identify where direct evidence ends, and add another vantage only
+          when the incident crosses that boundary.
         </p>
         <div class="field-guide-terms">
           <span>SKB tracing</span>
-          <span>TC / XDP</span>
-          <span>kernel BTF</span>
+          <span>HTTPS latency</span>
+          <span>ISP boundary</span>
           <span>packet drops</span>
           <span>rootless replay</span>
         </div>
-        <a class="primary-link" href="guides/debug-linux-packet-drops.html">Open the Linux packet-drop guide <span aria-hidden="true">→</span></a>
+        <div class="field-guide-list">
+          <a href="guides/debug-linux-packet-drops.html">
+            <span>01</span>
+            <strong>Debug a packet drop inside Linux</strong>
+            <span aria-hidden="true">→</span>
+          </a>
+          <a href="guides/trace-a-website-request.html">
+            <span>02</span>
+            <strong>Trace a website request across your host, ISP, and target</strong>
+            <span aria-hidden="true">→</span>
+          </a>
+        </div>
       </div>
     </section>
 
