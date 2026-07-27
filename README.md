@@ -13,6 +13,8 @@
 
 `skbx` shows where a packet went inside Linux—and keeps the receipts.
 
+**[Follow a packet through the flight recorder →](https://copyleftdev.github.io/skbx/)**
+
 It observes kernel networking functions, TC/XDP programs, packet
 transformations, tunnels, drops, and selected BPF helper activity with
 Rust and CO-RE eBPF. Every observation lands in a bounded, replayable evidence

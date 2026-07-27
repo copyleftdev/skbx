@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">skbx flight recorder mark</title>
+  <desc id="desc">A packet trace turns around a kernel hook and resolves into an x.</desc>
+  <rect width="64" height="64" rx="12" fill="#12150f"/>
+  <path d="M9 41c11 0 12-21 25-21 8 0 9 13 21 13" fill="none" stroke="#d7ff3f" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="9" cy="41" r="3.5" fill="#ff6b35"/>
+  <circle cx="34" cy="20" r="4" fill="#d7ff3f"/>
+  <circle cx="55" cy="33" r="3.5" fill="#f2f5df"/>
+  <path d="m27 36 10 10m0-10L27 46" stroke="#f2f5df" stroke-width="4" stroke-linecap="square"/>
+</svg>
