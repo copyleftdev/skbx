@@ -85,6 +85,8 @@ skbx plan --filter-func 'ip.*'
 sudo skbx capture --duration 10 --format jsonl --output trace.jsonl
 sudo skbx capture --probe tcp_v4_do_rcv --output-stack \
   --timestamp absolute --output trace.jsonl tcp port 443
+sudo skbx capture --probe tcp_v4_do_rcv --format text \
+  --timestamp relative --output -
 sudo skbx capture --probe ip_local_out --output-tunnel \
   --filter-tunnel-pcap-l2 'ether proto 0x0800' \
   --filter-tunnel-pcap-l3 'icmp' --output trace.jsonl udp port 4789
@@ -122,6 +124,11 @@ Rotated output is JSONL-only and uses exact byte and backup ceilings. The
 active file is the newest segment; `.1`, `.2`, and so on are older, with
 optional `.gz`. Every retained segment has matching capture envelopes and can
 be replayed or explained on its own; input gzip is detected by magic bytes.
+
+Text capture uses stable pwru-shaped core columns for SKB, CPU/process/PID,
+timestamp, netns, mark, interface, protocol, MTU, length, tuple and function.
+Agent provenance remains visible as `ASSOC`/`ORIGIN`; caller, metadata, control
+buffer, tunnel, map, stack and BTF evidence use deterministic indented records.
 
 ## Build
 

@@ -1591,14 +1591,39 @@ fn write_start(writer: &mut impl Write, format: OutputFormat, start: &CaptureSta
             if start.timestamp_mode == "none" {
                 writeln!(
                     writer,
-                    "{:<5} {:<8} {:<18} {:<8} {:<7} {:<13} FUNCTION",
-                    "CPU", "PID", "SKB", "LEN", "ASSOC", "ORIGIN"
+                    "{:<18} {:<5} {:<16} {:<8} {:<10} {:<10} {:<8} {:<6} {:<5} {:<7} {:<38} {:<7} {:<13} FUNCTION",
+                    "SKB",
+                    "CPU",
+                    "PROCESS",
+                    "PID",
+                    "NETNS",
+                    "MARK/x",
+                    "IFACE",
+                    "PROTO",
+                    "MTU",
+                    "LEN",
+                    "TUPLE",
+                    "ASSOC",
+                    "ORIGIN"
                 )?;
             } else {
                 writeln!(
                     writer,
-                    "{:<30} {:<5} {:<8} {:<18} {:<8} {:<7} {:<13} FUNCTION",
-                    "TIME", "CPU", "PID", "SKB", "LEN", "ASSOC", "ORIGIN"
+                    "{:<30} {:<18} {:<5} {:<16} {:<8} {:<10} {:<10} {:<8} {:<6} {:<5} {:<7} {:<38} {:<7} {:<13} FUNCTION",
+                    "TIME",
+                    "SKB",
+                    "CPU",
+                    "PROCESS",
+                    "PID",
+                    "NETNS",
+                    "MARK/x",
+                    "IFACE",
+                    "PROTO",
+                    "MTU",
+                    "LEN",
+                    "TUPLE",
+                    "ASSOC",
+                    "ORIGIN"
                 )?;
             }
             Ok(())
@@ -1610,7 +1635,6 @@ fn write_event(writer: &mut impl Write, format: OutputFormat, event: &TraceEvent
     match format {
         OutputFormat::Jsonl => write_envelope(writer, &Envelope::Event(event.clone())),
         OutputFormat::Text => {
-            let function = event_display_name(event);
             let association = match event.association {
                 EventAssociation::Direct => "direct",
                 EventAssociation::Stack => "stack",
@@ -1621,15 +1645,30 @@ fn write_event(writer: &mut impl Write, format: OutputFormat, event: &TraceEvent
                 MatchOrigin::TrackedXdp => "tracked_xdp",
                 MatchOrigin::StackAssociation => "stack",
             };
+            let tuple = event
+                .tuple
+                .as_ref()
+                .map_or_else(|| "-".into(), format_packet_tuple);
+            let mut function = event_display_name(event);
+            if let Some(reason) = &event.drop_reason {
+                function.push_str(&format!("({reason})"));
+            }
             if let Some(timestamp) = &event.presentation_timestamp {
                 writeln!(
                     writer,
-                    "{:<30} {:<5} {:<8} {:<18} {:<8} {:<7} {:<13} {}",
+                    "{:<30} {:<18} {:<5} {:<16} {:<8} {:<10} {:<10x} {:<8} 0x{:04x} {:<5} {:<7} {:<38} {:<7} {:<13} {}",
                     timestamp.display,
-                    event.cpu,
-                    event.pid,
                     event.skb,
+                    event.cpu,
+                    event.command,
+                    event.pid,
+                    event.packet.netns,
+                    event.packet.mark,
+                    event.packet.ifindex,
+                    event.packet.protocol,
+                    event.packet.mtu,
                     event.packet.len,
+                    tuple,
                     association,
                     origin,
                     &function
@@ -1637,15 +1676,74 @@ fn write_event(writer: &mut impl Write, format: OutputFormat, event: &TraceEvent
             } else {
                 writeln!(
                     writer,
-                    "{:<5} {:<8} {:<18} {:<8} {:<7} {:<13} {}",
-                    event.cpu,
-                    event.pid,
+                    "{:<18} {:<5} {:<16} {:<8} {:<10} {:<10x} {:<8} 0x{:04x} {:<5} {:<7} {:<38} {:<7} {:<13} {}",
                     event.skb,
+                    event.cpu,
+                    event.command,
+                    event.pid,
+                    event.packet.netns,
+                    event.packet.mark,
+                    event.packet.ifindex,
+                    event.packet.protocol,
+                    event.packet.mtu,
                     event.packet.len,
+                    tuple,
                     association,
                     origin,
                     &function
                 )?;
+            }
+            if let Some(caller) = &event.caller {
+                writeln!(writer, "  CALLER {}", display_function(caller))?;
+            }
+            for metadata in &event.metadata {
+                let value = metadata
+                    .value
+                    .as_ref()
+                    .map_or_else(|| "read_error".into(), format_metadata_scalar);
+                writeln!(
+                    writer,
+                    "  META {}={} type={} error={}",
+                    metadata.expression,
+                    value,
+                    metadata.type_name,
+                    metadata.read_error.as_deref().unwrap_or("none")
+                )?;
+            }
+            if event.packet.control_buffer.iter().any(|value| *value != 0) {
+                writeln!(
+                    writer,
+                    "  CB [{}]",
+                    event
+                        .packet
+                        .control_buffer
+                        .iter()
+                        .map(|value| format!("0x{value:08x}"))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )?;
+            }
+            if let Some(tunnel) = &event.tunnel_tuple {
+                writeln!(writer, "  TUNNEL {}", format_packet_tuple(tunnel))?;
+            }
+            if let Some(map) = &event.bpf_map {
+                writeln!(
+                    writer,
+                    "  MAP {:?} id={} name={} key={} value={} errors={}",
+                    map.operation,
+                    map.map_id,
+                    map.map_name,
+                    map.key.as_deref().unwrap_or("-"),
+                    map.value.as_deref().unwrap_or("-"),
+                    if map.read_errors.is_empty() {
+                        "none".into()
+                    } else {
+                        map.read_errors.join(",")
+                    }
+                )?;
+            }
+            for frame in &event.stack {
+                writeln!(writer, "  STACK {}", display_function(frame))?;
             }
             for dump in &event.btf_dumps {
                 writeln!(
@@ -1663,6 +1761,51 @@ fn write_event(writer: &mut impl Write, format: OutputFormat, event: &TraceEvent
             }
             Ok(())
         }
+    }
+}
+
+fn display_function(function: &skbx_contract::FunctionRef) -> String {
+    function
+        .symbol
+        .clone()
+        .unwrap_or_else(|| function.address.clone())
+}
+
+fn format_metadata_scalar(value: &MetadataScalar) -> String {
+    match value {
+        MetadataScalar::Unsigned { value } => value.to_string(),
+        MetadataScalar::Signed { value } => value.to_string(),
+        MetadataScalar::Boolean { value } => value.to_string(),
+        MetadataScalar::Pointer { address } => address.clone(),
+    }
+}
+
+fn format_packet_tuple(tuple: &PacketTuple) -> String {
+    let source = format_tuple_endpoint(&tuple.source, tuple.source_port);
+    let destination = format_tuple_endpoint(&tuple.destination, tuple.destination_port);
+    let protocol = match tuple.l4_protocol {
+        6 => format!("tcp:0x{:02x}", tuple.tcp_flags),
+        17 => "udp".into(),
+        1 => format!(
+            "icmp:{}/{}",
+            tuple.icmp_type.unwrap_or_default(),
+            tuple.icmp_code.unwrap_or_default()
+        ),
+        58 => format!(
+            "icmp6:{}/{}",
+            tuple.icmp_type.unwrap_or_default(),
+            tuple.icmp_code.unwrap_or_default()
+        ),
+        value => format!("l4:{value}"),
+    };
+    format!("{source}->{destination}({protocol})")
+}
+
+fn format_tuple_endpoint(address: &str, port: u16) -> String {
+    if address.contains(':') {
+        format!("[{address}]:{port}")
+    } else {
+        format!("{address}:{port}")
     }
 }
 
@@ -1810,6 +1953,65 @@ mod tests {
             "bpf:tc:42:cls_test/classify_packet"
         );
         assert_eq!(event.bpf_program_phase, Some(BpfProgramPhase::Entry));
+    }
+
+    #[test]
+    fn text_output_carries_pwru_core_columns_and_agent_provenance() {
+        let mut command = [0; 16];
+        command[..4].copy_from_slice(b"curl");
+        let event = convert_event(
+            "capture",
+            0,
+            skbx_sensor::RawTraceEvent {
+                skb_addr: 0x1234,
+                function_ip: 0x1000,
+                caller_ip: 0x1008,
+                cpu: 4,
+                pid: 7,
+                len: 64,
+                mark: 0x2a,
+                ifindex: 3,
+                netns: 4026532000,
+                mtu: 1500,
+                protocol: 0x0800_u16.to_be(),
+                tuple: skbx_sensor::RawPacketTuple {
+                    l3_protocol: 0x0800,
+                    l4_protocol: 6,
+                    saddr: [10, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    daddr: [10, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    sport: 1234_u16.to_be(),
+                    dport: 443_u16.to_be(),
+                    tcp_flags: 0x12,
+                    ..Default::default()
+                },
+                command,
+                ..Default::default()
+            },
+            RawEventComponents::default(),
+            EventEnrichment {
+                metadata_projections: &[],
+                xdp_metadata_projections: &[],
+                symbols: &SymbolTable::parse(
+                    "0000000000001000 T ip_rcv\n0000000000001008 T ip_rcv_finish\n",
+                ),
+                drop_reasons: &DropReasonTable::default(),
+                stack: &[],
+            },
+        );
+        let mut output = Vec::new();
+        write_event(&mut output, OutputFormat::Text, &event).expect("write text event");
+        let output = String::from_utf8(output).expect("UTF-8 text event");
+
+        assert!(output.contains("0x1234"));
+        assert!(output.contains("curl"));
+        assert!(output.contains("4026532000"));
+        assert!(output.contains("2a"));
+        assert!(output.contains("0x0800"));
+        assert!(output.contains("10.0.0.1:1234->10.0.0.2:443(tcp:0x12)"));
+        assert!(output.contains("direct"));
+        assert!(output.contains("filter"));
+        assert!(output.contains("ip_rcv"));
+        assert!(output.contains("CALLER ip_rcv_finish"));
     }
 
     #[test]
