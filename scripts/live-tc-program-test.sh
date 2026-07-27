@@ -119,6 +119,7 @@ jq -e '
         .events > 0 and
         .reliability.kernel_reserve_failures == 0 and
         .reliability.kernel_read_failures == 0 and
+        .reliability.kernel_recursion_misses == 0 and
         .reliability.userspace_decode_failures == 0
     )
 ' "${TRACE}" >/dev/null

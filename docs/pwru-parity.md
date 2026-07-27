@@ -45,7 +45,7 @@ coverage and a relevant live-kernel check exist.
 | Output event limit | supported | `--max-events`, bounded by default |
 | Rotating/compressed output files | supported | Maintained `file-rotate`/`flate2` sink with exact byte/backup bounds, optional gzip and transparent gzip replay/explain; skbx rotates only after a complete footer and starts the next file with a matching header, so every retained segment replays independently; unit and live gates force rotation |
 | Ready file | supported | `--ready-file` removes stale state, then uses create-new only after links attach and the capture header is flushed |
-| Loss/recursion reporting | partial | Ring reserve/read/filter/decode/enrichment/output telemetry explicit; BPF recursion misses are not yet observable |
+| Loss/recursion reporting | supported | Ring reserve/read/filter/decode/enrichment/output telemetry is explicit; exact loaded tracer program IDs are retained and their kernel `bpf_prog_info.recursion_misses` counters are summed at segment and capture boundaries, with any miss making the reliability gate incomplete; base, TC and paired-XDP live gates cover the query path |
 | Deterministic replay | supported | Rootless, byte-stable summary |
 | Evidence-handle lookup | supported | `event:<digest>` plus bounded same-SKB context |
 | Self-describing agent contract | supported | `describe`, JSON Schema and stable exit codes |

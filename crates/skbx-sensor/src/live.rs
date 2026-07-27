@@ -166,6 +166,7 @@ pub struct LiveSensor {
     attachment_backend: &'static str,
     identity_hooks: Vec<String>,
     bpf_programs: Vec<BpfProgramRef>,
+    tracer_program_ids: Vec<u32>,
     enrichment_failures: u64,
 }
 
@@ -338,6 +339,15 @@ impl LiveSensor {
         let object = open
             .load()
             .map_err(|error| LiveError::Load(error.to_string()))?;
+        let mut tracer_program_ids = object
+            .progs()
+            .filter(|program| program.autoload())
+            .map(|program| {
+                Program::id_from_fd(program.as_fd()).map_err(|error| {
+                    LiveError::Program(format!("query tracer program ID: {error}"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let mut links = Vec::new();
         for argument in active_arguments {
             let selected: Vec<String> = probes
@@ -507,9 +517,10 @@ impl LiveSensor {
 
         let mut bpf_programs = Vec::new();
         if trace_tc {
-            for (link, program) in attach_tc_programs(&object, btf_path, config)? {
+            for (link, program, tracer_id) in attach_tc_programs(&object, btf_path, config)? {
                 links.push(link);
                 bpf_programs.push(program);
+                tracer_program_ids.push(tracer_id);
             }
             if bpf_programs.is_empty() {
                 return Err(LiveError::Program(
@@ -518,8 +529,9 @@ impl LiveSensor {
             }
         }
         if trace_xdp {
-            for (link, program) in attach_xdp_programs(&object, btf_path, config)? {
+            for (link, program, tracer_id) in attach_xdp_programs(&object, btf_path, config)? {
                 links.push(link);
+                tracer_program_ids.push(tracer_id);
                 if !bpf_programs.contains(&program) {
                     bpf_programs.push(program);
                 }
@@ -552,6 +564,7 @@ impl LiveSensor {
                 .map(|(function, _)| function.to_owned())
                 .collect(),
             bpf_programs,
+            tracer_program_ids,
             enrichment_failures: 0,
         })
     }
@@ -593,6 +606,26 @@ impl LiveSensor {
 
     pub fn decode_failures(&self) -> u64 {
         self.ring_state.decode_failures
+    }
+
+    pub fn recursion_misses(&self) -> Result<u64, LiveError> {
+        let wanted: BTreeSet<u32> = self.tracer_program_ids.iter().copied().collect();
+        let mut found = BTreeSet::new();
+        let mut total = 0_u64;
+
+        for program in ProgInfoIter::default() {
+            if wanted.contains(&program.id) {
+                found.insert(program.id);
+                total = total.saturating_add(program.recursion_misses);
+            }
+        }
+        if found != wanted {
+            let missing = wanted.difference(&found).copied().collect::<Vec<_>>();
+            return Err(LiveError::Program(format!(
+                "query recursion misses for tracer program IDs {missing:?}"
+            )));
+        }
+        Ok(total)
     }
 
     pub fn stack_frames(&mut self, stack_id: i64) -> Vec<u64> {
@@ -692,7 +725,7 @@ fn attach_tc_programs(
     base: &Object,
     btf_path: Option<&Path>,
     config: &SensorConfig,
-) -> Result<Vec<(Link, BpfProgramRef)>, LiveError> {
+) -> Result<Vec<(Link, BpfProgramRef, u32)>, LiveError> {
     attach_dynamic_programs(
         base,
         btf_path,
@@ -709,7 +742,7 @@ fn attach_xdp_programs(
     base: &Object,
     btf_path: Option<&Path>,
     config: &SensorConfig,
-) -> Result<Vec<(Link, BpfProgramRef)>, LiveError> {
+) -> Result<Vec<(Link, BpfProgramRef, u32)>, LiveError> {
     let mut attached = attach_dynamic_programs(
         base,
         btf_path,
@@ -743,7 +776,7 @@ fn attach_dynamic_programs(
     raw_kind: u8,
     kind: BpfProgramKind,
     label: &str,
-) -> Result<Vec<(Link, BpfProgramRef)>, LiveError> {
+) -> Result<Vec<(Link, BpfProgramRef, u32)>, LiveError> {
     let options = ProgInfoQueryOptions::default().include_func_info(true);
     let targets: Vec<(ProgramInfo, String)> = ProgInfoIter::with_query_opts(options)
         .filter(|program| program.ty == target_type)
@@ -798,6 +831,12 @@ fn attach_dynamic_programs(
             .progs_mut()
             .find(|program| program.name() == OsStr::new(tracer_name))
             .ok_or_else(|| LiveError::Program(format!("program {tracer_name} not found")))?;
+        let tracer_id = Program::id_from_fd(tracer.as_fd()).map_err(|error| {
+            LiveError::Program(format!(
+                "query {label} tracer ID for program {}: {error}",
+                target.id
+            ))
+        })?;
         let link = tracer.attach_trace().map_err(|error| {
             LiveError::Program(format!(
                 "attach {label} tracer to program {} entry {entry}: {error}",
@@ -812,6 +851,7 @@ fn attach_dynamic_programs(
                 entry,
                 kind: kind.clone(),
             },
+            tracer_id,
         ));
     }
     Ok(attached)

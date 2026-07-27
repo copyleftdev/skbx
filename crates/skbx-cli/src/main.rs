@@ -461,8 +461,9 @@ fn run(cli: Cli) -> Result<u8> {
                         );
                     }
                     println!(
-                        "Reliability: kernel_reserve_failures={} decode_failures={} output_failures={}",
+                        "Reliability: kernel_reserve_failures={} kernel_recursion_misses={} decode_failures={} output_failures={}",
                         summary.reliability.kernel_reserve_failures,
+                        summary.reliability.kernel_recursion_misses,
                         summary.reliability.userspace_decode_failures,
                         summary.reliability.output_failures
                     );
@@ -977,6 +978,7 @@ fn capture(
                     CaptureWriter::Segmented(writer) => {
                         writer.write_event(&event, || {
                             let current = sensor.stats()?.into_reliability(
+                                sensor.recursion_misses()?,
                                 sensor.decode_failures(),
                                 sensor.enrichment_failures(),
                             );
@@ -991,8 +993,11 @@ fn capture(
         }
 
         let stats = sensor.stats()?;
-        let reliability =
-            stats.into_reliability(sensor.decode_failures(), sensor.enrichment_failures());
+        let reliability = stats.into_reliability(
+            sensor.recursion_misses()?,
+            sensor.decode_failures(),
+            sensor.enrichment_failures(),
+        );
         let complete = reliability.complete();
         let end = CaptureEnd {
             schema: CONTRACT_VERSION.into(),
@@ -1532,6 +1537,9 @@ fn reliability_delta(current: &Reliability, previous: &Reliability) -> Reliabili
         kernel_filtered_events: current
             .kernel_filtered_events
             .saturating_sub(previous.kernel_filtered_events),
+        kernel_recursion_misses: current
+            .kernel_recursion_misses
+            .saturating_sub(previous.kernel_recursion_misses),
         userspace_decode_failures: current
             .userspace_decode_failures
             .saturating_sub(previous.userspace_decode_failures),
@@ -1694,10 +1702,11 @@ fn write_end(writer: &mut impl Write, format: OutputFormat, end: &CaptureEnd) ->
         OutputFormat::Text => {
             writeln!(
                 writer,
-                "capture_end events={} complete={} reserve_failures={} decode_failures={} reason={:?}",
+                "capture_end events={} complete={} reserve_failures={} recursion_misses={} decode_failures={} reason={:?}",
                 end.events,
                 end.complete,
                 end.reliability.kernel_reserve_failures,
+                end.reliability.kernel_recursion_misses,
                 end.reliability.userspace_decode_failures,
                 end.stop_reason
             )?;

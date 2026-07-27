@@ -94,8 +94,8 @@ impl Describe {
                     name: "loss-telemetry",
                     status: supported.clone(),
                     requires: "live capture",
-                    cost: "one per-cpu increment on reserve failure",
-                    description: "report kernel reserve failures and userspace decode failures",
+                    cost: "one per-cpu increment on hot-path failures plus tracer-info queries at segment boundaries",
+                    description: "report kernel reserve/read/filter failures, exact-program recursion misses and userspace decode/enrichment/output failures",
                 },
                 Capability {
                     name: "deterministic-replay",
@@ -630,6 +630,8 @@ pub struct Reliability {
     pub kernel_read_failures: u64,
     #[serde(default)]
     pub kernel_filtered_events: u64,
+    #[serde(default)]
+    pub kernel_recursion_misses: u64,
     pub userspace_decode_failures: u64,
     #[serde(default)]
     pub userspace_enrichment_failures: u64,
@@ -639,6 +641,7 @@ pub struct Reliability {
 impl Reliability {
     pub fn complete(&self) -> bool {
         self.kernel_reserve_failures == 0
+            && self.kernel_recursion_misses == 0
             && self.userspace_decode_failures == 0
             && self.userspace_enrichment_failures == 0
             && self.output_failures == 0
@@ -1129,6 +1132,7 @@ pub fn json_schema() -> serde_json::Value {
                     "kernel_reserve_failures": {"type": "integer", "minimum": 0},
                     "kernel_read_failures": {"type": "integer", "minimum": 0},
                     "kernel_filtered_events": {"type": "integer", "minimum": 0},
+                    "kernel_recursion_misses": {"type": "integer", "minimum": 0},
                     "userspace_decode_failures": {"type": "integer", "minimum": 0},
                     "userspace_enrichment_failures": {"type": "integer", "minimum": 0},
                     "output_failures": {"type": "integer", "minimum": 0}
@@ -1180,6 +1184,13 @@ mod tests {
         assert!(
             !Reliability {
                 kernel_reserve_failures: 1,
+                ..Reliability::default()
+            }
+            .complete()
+        );
+        assert!(
+            !Reliability {
+                kernel_recursion_misses: 1,
                 ..Reliability::default()
             }
             .complete()

@@ -488,11 +488,17 @@ pub struct KernelStats {
 }
 
 impl KernelStats {
-    pub fn into_reliability(self, decode_failures: u64, enrichment_failures: u64) -> Reliability {
+    pub fn into_reliability(
+        self,
+        recursion_misses: u64,
+        decode_failures: u64,
+        enrichment_failures: u64,
+    ) -> Reliability {
         Reliability {
             kernel_reserve_failures: self.reserve_failures,
             kernel_read_failures: self.read_failures,
             kernel_filtered_events: self.filtered_events,
+            kernel_recursion_misses: recursion_misses,
             userspace_decode_failures: decode_failures,
             userspace_enrichment_failures: enrichment_failures,
             output_failures: 0,

@@ -71,8 +71,8 @@ resolved in the namespace selected by `--filter-netns`, and device-less
 output SKBs fall back to their socket namespace.
 
 It does **not yet** claim full `pwru` parity. Unrestricted expression syntax,
-perfect text-column compatibility, BPF recursion-miss telemetry and universal
-XDP-to-SKB lineage across copying drivers remain explicit gaps.
+perfect text-column compatibility and universal XDP-to-SKB lineage across
+copying drivers remain explicit gaps.
 
 ## Commands
 
