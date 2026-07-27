@@ -10,7 +10,7 @@ use skbx_contract::{
 use skbx_core::{
     BoundedMap, DEFAULT_BTF_PATH, DropReasonTable, SymbolTable, build_probe_plan_with_bpf_helpers,
     capture_id, discover_bpf_helpers, doctor, event_handle, explain_with_context, replay,
-    resolve_skb_metadata,
+    resolve_skb_filter, resolve_skb_metadata,
 };
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
@@ -125,6 +125,9 @@ enum Command {
         /// Keep following matching SKBs and their clone/copy descendants.
         #[arg(long)]
         filter_track_skb: bool,
+        /// Apply up to four BTF-checked scalar comparisons joined with &&.
+        #[arg(long)]
+        filter_skb_expr: Option<String>,
         /// Apply a libpcap expression to the inner Ethernet frame when present.
         #[arg(long)]
         filter_tunnel_pcap_l2: Option<String>,
@@ -338,6 +341,7 @@ fn run(cli: Cli) -> Result<u8> {
             filter_ifname,
             filter_netns,
             filter_track_skb,
+            filter_skb_expr,
             filter_tunnel_pcap_l2,
             filter_tunnel_pcap_l3,
             output_stack,
@@ -369,6 +373,7 @@ fn run(cli: Cli) -> Result<u8> {
             filter_ifname.as_deref(),
             filter_netns.as_deref(),
             filter_track_skb,
+            filter_skb_expr.as_deref(),
             filter_tunnel_pcap_l2.as_deref(),
             filter_tunnel_pcap_l3.as_deref(),
             output_stack,
@@ -496,6 +501,7 @@ fn capture(
     filter_ifname: Option<&str>,
     filter_netns: Option<&str>,
     filter_track_skb: bool,
+    filter_skb_expr: Option<&str>,
     filter_tunnel_pcap_l2: Option<&str>,
     filter_tunnel_pcap_l3: Option<&str>,
     output_stack: bool,
@@ -546,11 +552,13 @@ fn capture(
         prepare_ready_file(path)?;
     }
     let metadata_projections = resolve_skb_metadata(output_skb_metadata, kernel_btf)?;
+    let scalar_filter = resolve_skb_filter(filter_skb_expr, kernel_btf)?;
     let mut filters = resolve_filters(filter_mark, filter_ifindex, filter_ifname, filter_netns)?;
     filters.pcap = (!pcap_filter.is_empty()).then(|| pcap_filter.join(" "));
     filters.tunnel_pcap_l2 = filter_tunnel_pcap_l2.map(str::to_owned);
     filters.tunnel_pcap_l3 = filter_tunnel_pcap_l3.map(str::to_owned);
     filters.track_skb = filter_track_skb;
+    filters.skb_expression = scalar_filter.as_ref().map(|filter| filter.source.clone());
     if filter_track_skb
         && filters.mark_mask == 0
         && filters.ifindex == 0
@@ -558,6 +566,7 @@ fn capture(
         && filters.pcap.is_none()
         && filters.tunnel_pcap_l2.is_none()
         && filters.tunnel_pcap_l3.is_none()
+        && filters.skb_expression.is_none()
     {
         bail!("--filter-track-skb requires at least one packet filter");
     }
@@ -682,6 +691,49 @@ fn capture(
                         _pad: 0,
                     },
                 )
+            }),
+            scalar_filter_count: scalar_filter
+                .as_ref()
+                .map_or(0, |filter| filter.conditions.len() as u32),
+            scalar_filters: std::array::from_fn(|index| {
+                scalar_filter
+                    .as_ref()
+                    .and_then(|filter| filter.conditions.get(index))
+                    .map_or_else(skbx_sensor::ScalarFilterCondition::default, |condition| {
+                        skbx_sensor::ScalarFilterCondition {
+                            access: skbx_sensor::MetadataAccess {
+                                offsets: condition.access.offsets,
+                                dereference_mask: condition.access.dereference_mask,
+                                steps: condition.access.steps,
+                                size: condition.access.size,
+                                _pad: 0,
+                            },
+                            _pad0: [0; 4],
+                            value: condition.value,
+                            comparison: match condition.comparison {
+                                skbx_core::ScalarComparison::Equal => {
+                                    skbx_sensor::FILTER_COMPARE_EQUAL
+                                }
+                                skbx_core::ScalarComparison::NotEqual => {
+                                    skbx_sensor::FILTER_COMPARE_NOT_EQUAL
+                                }
+                                skbx_core::ScalarComparison::Less => {
+                                    skbx_sensor::FILTER_COMPARE_LESS
+                                }
+                                skbx_core::ScalarComparison::LessOrEqual => {
+                                    skbx_sensor::FILTER_COMPARE_LESS_OR_EQUAL
+                                }
+                                skbx_core::ScalarComparison::Greater => {
+                                    skbx_sensor::FILTER_COMPARE_GREATER
+                                }
+                                skbx_core::ScalarComparison::GreaterOrEqual => {
+                                    skbx_sensor::FILTER_COMPARE_GREATER_OR_EQUAL
+                                }
+                            },
+                            signed: u8::from(condition.signed),
+                            _pad1: [0; 6],
+                        }
+                    })
             }),
         };
         let mut sensor = skbx_sensor::LiveSensor::attach(
@@ -938,6 +990,7 @@ fn resolve_filters(
         pcap: None,
         tunnel_pcap_l2: None,
         tunnel_pcap_l3: None,
+        skb_expression: None,
     })
 }
 

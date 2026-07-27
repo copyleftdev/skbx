@@ -203,6 +203,13 @@ impl Describe {
                     description: "resolve bounded skb field paths before attach and emit typed values with per-projection read errors",
                 },
                 Capability {
+                    name: "btf-checked-skb-scalar-filter",
+                    status: supported.clone(),
+                    requires: "target kernel BTF",
+                    cost: "up to four bounded scalar reads per observed call",
+                    description: "compile up to four &&-joined typed scalar comparisons into immutable access plans with explicit read-failure telemetry",
+                },
+                Capability {
                     name: "skb-drop-reason",
                     status: supported.clone(),
                     requires: "kernel BTF enum and a supported drop function",
@@ -513,6 +520,8 @@ pub struct CaptureFilters {
     pub tunnel_pcap_l2: Option<String>,
     #[serde(default)]
     pub tunnel_pcap_l3: Option<String>,
+    #[serde(default)]
+    pub skb_expression: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -811,7 +820,8 @@ pub fn json_schema() -> serde_json::Value {
                     "track_stack": {"type": "boolean"},
                     "pcap": {"type": ["string", "null"]},
                     "tunnel_pcap_l2": {"type": ["string", "null"]},
-                    "tunnel_pcap_l3": {"type": ["string", "null"]}
+                    "tunnel_pcap_l3": {"type": ["string", "null"]},
+                    "skb_expression": {"type": ["string", "null"]}
                 },
                 "additionalProperties": false
             },
@@ -999,6 +1009,9 @@ mod tests {
         }));
         assert!(describe.capabilities.iter().any(|c| {
             c.name == "route-consensus-and-outliers" && c.status == CapabilityStatus::Supported
+        }));
+        assert!(describe.capabilities.iter().any(|c| {
+            c.name == "btf-checked-skb-scalar-filter" && c.status == CapabilityStatus::Supported
         }));
         assert!(
             describe.capabilities.iter().any(|c| {

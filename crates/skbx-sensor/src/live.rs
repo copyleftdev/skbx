@@ -19,6 +19,12 @@ static BPF_OBJECT: &Align8<{ include_bytes!(env!("SKBX_BPF_OBJ")).len() }> =
 
 pub const MAX_CBPF_INSNS: usize = 4096;
 pub const MAX_METADATA_ACCESS_STEPS: usize = 4;
+pub const FILTER_COMPARE_EQUAL: u8 = 1;
+pub const FILTER_COMPARE_NOT_EQUAL: u8 = 2;
+pub const FILTER_COMPARE_LESS: u8 = 3;
+pub const FILTER_COMPARE_LESS_OR_EQUAL: u8 = 4;
+pub const FILTER_COMPARE_GREATER: u8 = 5;
+pub const FILTER_COMPARE_GREATER_OR_EQUAL: u8 = 6;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -28,6 +34,17 @@ pub struct MetadataAccess {
     pub steps: u8,
     pub size: u8,
     pub _pad: u8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScalarFilterCondition {
+    pub access: MetadataAccess,
+    pub _pad0: [u8; 4],
+    pub value: u64,
+    pub comparison: u8,
+    pub signed: u8,
+    pub _pad1: [u8; 6],
 }
 
 #[repr(C)]
@@ -72,6 +89,19 @@ pub struct SensorConfig {
     pub tunnel_pcap_l3: CbpfProgram,
     pub metadata_count: u32,
     pub metadata: [MetadataAccess; crate::MAX_METADATA_PROJECTIONS],
+    pub scalar_filter_count: u32,
+    pub scalar_filters: [ScalarFilterCondition; crate::MAX_METADATA_PROJECTIONS],
+}
+
+#[cfg(test)]
+mod abi_tests {
+    use super::*;
+
+    #[test]
+    fn scalar_filter_layout_matches_bpf() {
+        assert_eq!(mem::size_of::<MetadataAccess>(), 20);
+        assert_eq!(mem::size_of::<ScalarFilterCondition>(), 40);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

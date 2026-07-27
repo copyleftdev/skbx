@@ -17,6 +17,8 @@ pub use raw::{
 mod live;
 #[cfg(feature = "ebpf")]
 pub use live::{
-    AttachmentMode, CbpfInsn, CbpfProgram, LiveError, LiveSensor, MAX_CBPF_INSNS,
-    MAX_METADATA_ACCESS_STEPS, MetadataAccess, SensorConfig,
+    AttachmentMode, CbpfInsn, CbpfProgram, FILTER_COMPARE_EQUAL, FILTER_COMPARE_GREATER,
+    FILTER_COMPARE_GREATER_OR_EQUAL, FILTER_COMPARE_LESS, FILTER_COMPARE_LESS_OR_EQUAL,
+    FILTER_COMPARE_NOT_EQUAL, LiveError, LiveSensor, MAX_CBPF_INSNS, MAX_METADATA_ACCESS_STEPS,
+    MetadataAccess, ScalarFilterCondition, SensorConfig,
 };

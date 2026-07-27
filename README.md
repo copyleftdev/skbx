@@ -43,6 +43,8 @@ split BTF. It records:
   explicitly bounded key/update-value bytes;
 - up to four target-BTF-validated scalar `skb->…` metadata projections,
   including bounded pointer chains and typed per-field read errors;
+- up to four `&&`-joined, target-BTF-validated scalar `skb->…` filter
+  comparisons, evaluated from immutable bounded access plans;
 - caller, network namespace, MTU and the SKB control buffer;
 - BTF-decoded SKB drop reasons on supported drop functions;
 - kernel ring-buffer reserve failures.
@@ -56,8 +58,8 @@ resolved in the namespace selected by `--filter-netns`, and device-less
 output SKBs fall back to their socket namespace.
 
 It does **not yet** claim full `pwru` parity. Packet-byte/BTF dumps, TC/XDP
-program tracing, arbitrary SKB/XDP filter expressions and XDP metadata
-projections remain explicit gaps.
+program tracing, unrestricted expression syntax and XDP metadata projections
+remain explicit gaps.
 
 ## Commands
 
@@ -76,6 +78,9 @@ sudo skbx capture --probe ip_local_out --output-tunnel \
 sudo skbx capture --probe ip_rcv \
   --output-skb-metadata 'skb->mark' \
   --output-skb-metadata 'skb->dev->ifindex' --output trace.jsonl
+sudo skbx capture --probe ip_rcv \
+  --filter-skb-expr 'skb->mark == 42 && skb->dev->ifindex > 0' \
+  --output trace.jsonl
 sudo skbx capture --probe ip_rcv --output trace.jsonl \
   --output-max-bytes 104857600 --output-max-backups 4 --output-compress
 skbx replay trace.jsonl --format json
@@ -139,7 +144,9 @@ XDP copy-on-write transitions, then proves that three observed SKB addresses
 retain one canonical identity through replay and `explain`. `sudo
 scripts/live-xdp-lineage-test.sh target/debug/skbx` proves that identity also
 survives XDP_TX frame transport into a newly allocated SKB, labeled
-`tracked_xdp`.
+`tracked_xdp`. `sudo scripts/live-skb-filter-test.sh target/debug/skbx`
+proves that BTF-compiled scalar predicates reject unmarked traffic and retain
+marked traffic with matching projected values.
 
 ## Architecture
 

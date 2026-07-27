@@ -55,6 +55,12 @@
 #define MAX_MAP_CAPTURE_BYTES 32
 #define MAX_METADATA_PROJECTIONS 4
 #define MAX_METADATA_ACCESS_STEPS 4
+#define FILTER_COMPARE_EQUAL 1
+#define FILTER_COMPARE_NOT_EQUAL 2
+#define FILTER_COMPARE_LESS 3
+#define FILTER_COMPARE_LESS_OR_EQUAL 4
+#define FILTER_COMPARE_GREATER 5
+#define FILTER_COMPARE_GREATER_OR_EQUAL 6
 
 #define ETH_P_IP   0x0800
 #define ETH_P_IPV6 0x86dd
@@ -229,6 +235,20 @@ struct metadata_access {
     __u8 _pad;
 };
 
+struct scalar_filter_condition {
+    struct metadata_access access;
+    __u8 _pad0[4];
+    __u64 value;
+    __u8 comparison;
+    __u8 is_signed;
+    __u8 _pad1[6];
+};
+
+_Static_assert(sizeof(struct metadata_access) == 20,
+               "metadata access ABI changed");
+_Static_assert(sizeof(struct scalar_filter_condition) == 40,
+               "scalar filter ABI changed");
+
 struct skbx_config {
     __u32 filter_mark;
     __u32 filter_mark_mask;
@@ -244,6 +264,8 @@ struct skbx_config {
     struct cbpf_program tunnel_pcap_l3;
     __u32 metadata_count;
     struct metadata_access metadata[MAX_METADATA_PROJECTIONS];
+    __u32 scalar_filter_count;
+    struct scalar_filter_condition scalar_filters[MAX_METADATA_PROJECTIONS];
 };
 
 const volatile struct skbx_config CONFIG = {};
@@ -738,6 +760,139 @@ static __always_inline int tunnel_pcap_filter_match(struct sk_buff *skb)
     return 1;
 }
 
+static __always_inline int read_scalar_access(
+    struct sk_buff *skb, const volatile struct metadata_access *access,
+    __u64 *value)
+{
+    void *cursor = skb;
+
+    *value = 0;
+    if (!skb || !access->steps ||
+        access->steps > MAX_METADATA_ACCESS_STEPS)
+        return -1;
+#pragma clang loop unroll(full)
+    for (int step = 0; step < MAX_METADATA_ACCESS_STEPS; step++) {
+        void *address;
+
+        if (step >= access->steps)
+            break;
+        address = cursor + access->offsets[step];
+        if (step + 1 < access->steps) {
+            if (access->dereference_mask & (1u << step)) {
+                __u64 next = 0;
+
+                if (bpf_probe_read_kernel(&next, sizeof(next), address) ||
+                    !next)
+                    return -1;
+                cursor = (void *)next;
+            } else {
+                cursor = address;
+            }
+            continue;
+        }
+        switch (access->size) {
+        case 1:
+            return bpf_probe_read_kernel(value, 1, address);
+        case 2:
+            return bpf_probe_read_kernel(value, 2, address);
+        case 4:
+            return bpf_probe_read_kernel(value, 4, address);
+        case 8:
+            return bpf_probe_read_kernel(value, 8, address);
+        default:
+            return -1;
+        }
+    }
+    return -1;
+}
+
+static __always_inline __s64 signed_scalar(__u64 value, __u8 size)
+{
+    switch (size) {
+    case 1:
+        return (__s8)value;
+    case 2:
+        return (__s16)value;
+    case 4:
+        return (__s32)value;
+    case 8:
+        return (__s64)value;
+    default:
+        return 0;
+    }
+}
+
+static __always_inline int scalar_filter_match(struct sk_buff *skb)
+{
+    if (CONFIG.scalar_filter_count > MAX_METADATA_PROJECTIONS)
+        return -1;
+#pragma clang loop unroll(full)
+    for (int index = 0; index < MAX_METADATA_PROJECTIONS; index++) {
+        const volatile struct scalar_filter_condition *condition =
+            &CONFIG.scalar_filters[index];
+        __u64 observed = 0;
+        int matched;
+
+        if (index >= CONFIG.scalar_filter_count)
+            break;
+        if (read_scalar_access(skb, &condition->access, &observed))
+            return -1;
+        if (condition->is_signed) {
+            __s64 left = signed_scalar(observed, condition->access.size);
+            __s64 right = (__s64)condition->value;
+
+            switch (condition->comparison) {
+            case FILTER_COMPARE_EQUAL:
+                matched = left == right;
+                break;
+            case FILTER_COMPARE_NOT_EQUAL:
+                matched = left != right;
+                break;
+            case FILTER_COMPARE_LESS:
+                matched = left < right;
+                break;
+            case FILTER_COMPARE_LESS_OR_EQUAL:
+                matched = left <= right;
+                break;
+            case FILTER_COMPARE_GREATER:
+                matched = left > right;
+                break;
+            case FILTER_COMPARE_GREATER_OR_EQUAL:
+                matched = left >= right;
+                break;
+            default:
+                return -1;
+            }
+        } else {
+            switch (condition->comparison) {
+            case FILTER_COMPARE_EQUAL:
+                matched = observed == condition->value;
+                break;
+            case FILTER_COMPARE_NOT_EQUAL:
+                matched = observed != condition->value;
+                break;
+            case FILTER_COMPARE_LESS:
+                matched = observed < condition->value;
+                break;
+            case FILTER_COMPARE_LESS_OR_EQUAL:
+                matched = observed <= condition->value;
+                break;
+            case FILTER_COMPARE_GREATER:
+                matched = observed > condition->value;
+                break;
+            case FILTER_COMPARE_GREATER_OR_EQUAL:
+                matched = observed >= condition->value;
+                break;
+            default:
+                return -1;
+            }
+        }
+        if (!matched)
+            return 0;
+    }
+    return 1;
+}
+
 static __always_inline int configured_filter_match(struct sk_buff *skb)
 {
     __u32 mark = 0;
@@ -748,13 +903,18 @@ static __always_inline int configured_filter_match(struct sk_buff *skb)
     if (!CONFIG.filter_mark_mask && !CONFIG.filter_ifindex &&
         !CONFIG.filter_netns && !CONFIG.pcap_l2.len &&
         !CONFIG.pcap_l3.len && !CONFIG.tunnel_pcap_l2.len &&
-        !CONFIG.tunnel_pcap_l3.len)
+        !CONFIG.tunnel_pcap_l3.len && !CONFIG.scalar_filter_count)
         return 1;
     if (!skb)
         goto filtered;
     if (!pcap_filter_match(skb))
         goto filtered;
     if (!tunnel_pcap_filter_match(skb))
+        goto filtered;
+    int scalar_match = scalar_filter_match(skb);
+    if (scalar_match < 0)
+        return -1;
+    if (!scalar_match)
         goto filtered;
 
     if (CONFIG.filter_mark_mask) {
@@ -984,56 +1144,11 @@ static __always_inline void fill_metadata(struct sk_buff *skb,
          projection++) {
         const volatile struct metadata_access *access =
             &CONFIG.metadata[projection];
-        void *cursor = skb;
-        int failed = !skb;
 
         if (projection >= metadata->count)
             break;
-#pragma clang loop unroll(full)
-        for (int step = 0; step < MAX_METADATA_ACCESS_STEPS; step++) {
-            void *address;
-
-            if (failed || step >= access->steps)
-                break;
-            address = cursor + access->offsets[step];
-            if (step + 1 < access->steps) {
-                if (access->dereference_mask & (1u << step)) {
-                    __u64 next = 0;
-
-                    if (bpf_probe_read_kernel(&next, sizeof(next), address) ||
-                        !next) {
-                        failed = 1;
-                        break;
-                    }
-                    cursor = (void *)next;
-                } else {
-                    cursor = address;
-                }
-                continue;
-            }
-            switch (access->size) {
-            case 1:
-                failed = bpf_probe_read_kernel(
-                    &metadata->values[projection], 1, address);
-                break;
-            case 2:
-                failed = bpf_probe_read_kernel(
-                    &metadata->values[projection], 2, address);
-                break;
-            case 4:
-                failed = bpf_probe_read_kernel(
-                    &metadata->values[projection], 4, address);
-                break;
-            case 8:
-                failed = bpf_probe_read_kernel(
-                    &metadata->values[projection], 8, address);
-                break;
-            default:
-                failed = 1;
-                break;
-            }
-        }
-        if (failed)
+        if (read_scalar_access(skb, access,
+                               &metadata->values[projection]))
             metadata->read_status |= 1u << projection;
     }
     if (metadata->read_status && counters)
