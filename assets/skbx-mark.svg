@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">skbx mark</title>
+  <desc id="desc">Four kinetic network particles form a packet route around a lowercase x.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#06111d"/>
+      <stop offset="1" stop-color="#11162e"/>
+    </linearGradient>
+    <linearGradient id="path" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5de4d0"/>
+      <stop offset=".56" stop-color="#c8f66b"/>
+      <stop offset="1" stop-color="#9b8cff"/>
+    </linearGradient>
+    <filter id="glow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="256" height="256" rx="52" fill="url(#bg)"/>
+  <path d="M39 170C63 159 73 85 119 91S157 180 211 112" fill="none" stroke="url(#path)" stroke-width="7" stroke-linecap="round"/>
+  <g filter="url(#glow)">
+    <circle cx="39" cy="170" r="9" fill="#5de4d0"/>
+    <circle cx="119" cy="91" r="11" fill="#c8f66b"/>
+    <circle cx="168" cy="163" r="8" fill="#9b8cff"/>
+    <circle cx="211" cy="112" r="10" fill="#5de4d0"/>
+  </g>
+  <text x="82" y="162" fill="#eefcff" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" font-size="78" font-weight="760" letter-spacing="-8">x</text>
+</svg>

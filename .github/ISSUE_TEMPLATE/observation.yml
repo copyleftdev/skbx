@@ -1,0 +1,57 @@
+name: Observation request
+description: Propose a packet path, kernel fact, or evidence workflow skbx should support.
+title: "observe: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Start with the kernel fact you need—not a preferred implementation. We will shape the smallest trustworthy observation together.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Operator question
+      description: What question should skbx make answerable?
+      placeholder: Which classifier changed this mark before…
+    validations:
+      required: true
+
+  - type: textarea
+    id: kernel_fact
+    attributes:
+      label: Kernel evidence
+      description: Which function, object, field, transition, or program action would establish the answer?
+    validations:
+      required: true
+
+  - type: textarea
+    id: current_gap
+    attributes:
+      label: Current gap
+      description: What does skbx emit today, and why is it insufficient?
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Relevant kernels and topology
+      description: Kernel range, architecture, driver, namespace/tunnel/TC/XDP topology, and a synthetic reproduction if available.
+    validations:
+      required: true
+
+  - type: textarea
+    id: bounds
+    attributes:
+      label: Cost and safety constraints
+      description: Expected traffic rate, acceptable overhead, cardinality, privilege, and sensitive-data considerations.
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Useful output
+      description: Sketch the smallest event fields or replay result that would resolve the question.

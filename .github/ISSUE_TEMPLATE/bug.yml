@@ -1,0 +1,104 @@
+name: Bug report
+description: Report incorrect, incomplete, or unreliable packet-path evidence.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for bringing evidence. Please keep production payloads, private addresses, and sensitive process data out of public issues.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the incorrect observation or failure in one clear paragraph.
+      placeholder: skbx attached successfully, but…
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact command
+      description: Include every selector, output option, and positional pcap expression.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Numbered setup, traffic generation, and observation steps.
+      placeholder: |
+        1. Create…
+        2. Run…
+        3. Send…
+        4. Observe…
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected evidence
+      description: What event, route, field, or reliability state should have appeared?
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Host capability report
+      description: Paste `skbx doctor --json`.
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: plan
+    attributes:
+      label: Probe plan
+      description: Paste `skbx plan --json` using the same selectors.
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include `uname -a`, distribution, architecture, skbx commit/version, and attachment backend.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: envelopes
+    attributes:
+      label: Capture boundaries
+      description: Paste the `capture_start` and `capture_end` envelopes. Preserve the reliability object.
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Minimal event or route evidence
+      description: Optional redacted traceq events, replay summary, and `event:`/`route:` handles.
+      render: json
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I removed sensitive payload, endpoint, process, and topology data.
+          required: true
+        - label: I preserved loss and reliability telemetry.
+          required: true
+        - label: I searched existing issues for this kernel path or error.
+          required: true

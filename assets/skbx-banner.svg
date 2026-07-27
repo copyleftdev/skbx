@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-labelledby="title desc">
+  <title id="title">skbx — packet paths, with receipts</title>
+  <desc id="desc">A kinetic network of cyan, lime, and violet particles flows around the skbx wordmark on a deep blue field.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#06111d"/>
+      <stop offset=".58" stop-color="#0a1726"/>
+      <stop offset="1" stop-color="#10152b"/>
+    </linearGradient>
+    <radialGradient id="pulse" cx=".78" cy=".5" r=".52">
+      <stop offset="0" stop-color="#25e6c8" stop-opacity=".16"/>
+      <stop offset=".55" stop-color="#756dff" stop-opacity=".08"/>
+      <stop offset="1" stop-color="#06111d" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="trace" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#28dbc1" stop-opacity=".08"/>
+      <stop offset=".46" stop-color="#5de4d0"/>
+      <stop offset=".76" stop-color="#c8f66b"/>
+      <stop offset="1" stop-color="#9b8cff" stop-opacity=".32"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#b8d7e8" stroke-opacity=".055"/>
+      <circle cx="0" cy="0" r="1" fill="#b8d7e8" fill-opacity=".11"/>
+    </pattern>
+    <filter id="glow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0L8 4 0 8Z" fill="#c8f66b"/>
+    </marker>
+  </defs>
+
+  <rect width="1280" height="360" rx="24" fill="url(#bg)"/>
+  <rect width="1280" height="360" rx="24" fill="url(#pulse)"/>
+  <rect x=".5" y=".5" width="1279" height="359" rx="23.5" fill="url(#grid)" stroke="#8fc8d9" stroke-opacity=".16"/>
+
+  <g fill="none" stroke-linecap="round">
+    <path d="M-30 260C120 246 154 116 302 134S490 303 652 238 816 73 991 111 1126 239 1310 166" stroke="url(#trace)" stroke-width="2.5" marker-end="url(#arrow)"/>
+    <path d="M21 301C194 296 214 204 366 213S600 330 747 265 891 150 1044 181 1163 287 1305 258" stroke="#8d80ff" stroke-opacity=".32" stroke-width="1.25" stroke-dasharray="3 11"/>
+    <path d="M-12 91C147 59 259 84 381 51S596 37 711 90 955 151 1085 74 1212 57 1300 85" stroke="#4fe0cb" stroke-opacity=".22" stroke-width="1.25" stroke-dasharray="1 13"/>
+    <path d="M750 47C829 73 820 157 895 165S998 97 1063 133 1109 230 1195 217" stroke="#c8f66b" stroke-opacity=".32" stroke-width="1.4"/>
+  </g>
+
+  <g filter="url(#glow)">
+    <circle cx="91" cy="241" r="5" fill="#5de4d0"/>
+    <circle cx="249" cy="132" r="7" fill="#c8f66b"/>
+    <circle cx="391" cy="218" r="4" fill="#9b8cff"/>
+    <circle cx="650" cy="238" r="6" fill="#5de4d0"/>
+    <circle cx="816" cy="111" r="4" fill="#c8f66b"/>
+    <circle cx="895" cy="165" r="8" fill="#5de4d0"/>
+    <circle cx="1044" cy="181" r="5" fill="#9b8cff"/>
+    <circle cx="1195" cy="217" r="7" fill="#c8f66b"/>
+  </g>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">
+    <text x="82" y="112" fill="#8ba7b7" font-size="13" letter-spacing="3">LINUX / eBPF / RUST</text>
+    <text x="78" y="220" fill="#eefcff" font-size="112" font-weight="740" letter-spacing="-10">skbx</text>
+    <circle cx="407" cy="201" r="7" fill="#c8f66b" filter="url(#glow)"/>
+    <text x="84" y="274" fill="#b9ccd6" font-size="24" letter-spacing=".4">packet paths, with receipts.</text>
+    <text x="898" y="293" fill="#88a5b5" font-size="12" letter-spacing="2">TRACE → REPLAY → EXPLAIN</text>
+    <text x="1100" y="321" fill="#5de4d0" font-size="11" letter-spacing="1.5">traceq/0.1.0</text>
+  </g>
+</svg>

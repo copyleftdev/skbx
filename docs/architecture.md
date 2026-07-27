@@ -72,33 +72,15 @@ attached based only on its name.
 The kernel hot path never performs JSON encoding, symbolization or process
 filesystem reads.
 
-## Parity roadmap
+## Delivered surface
 
-### Phase 1 — vertical slice
+The evidence-backed surface includes BTF-discovered SKB and non-SKB probes,
+individual and kprobe-multi attachment, split-BTF modules, tuple and tunnel
+decoding, lineage across clone/copy/COW and XDP frame transport, TC/XDP
+program observation, helper/map evidence, typed metadata and filters, atomic
+BTF dumps, loss telemetry, schema, doctor, plan, capture, replay, and explain.
 
-- BTF-discovered SKB probes in argument positions 1–5;
-- BTF-validated non-SKB probes with explicit bounded stack association;
-- individual and kprobe-multi attachment backends;
-- metadata capture;
-- named SKB drop reasons;
-- explicit loss telemetry;
-- schema, doctor, plan, capture, replay and explain.
-
-### Phase 2 — pwru breadth
-
-- ICMP and bounded IPv6 extension-header decoding (complete);
-- tunnel filters and inner tuple decoding (complete);
-- network namespace and cross-namespace interface filtering (complete);
-- process enrichment;
-- split-BTF kernel module discovery (complete).
-
-### Phase 3 — agent-native analysis
-
-- `ask --dry-run` evidence prompt generation;
-- CI reliability gates such as `--fail-on-loss`.
-
-### Phase 4 — advanced parity
-
-- TC/XDP tracking;
-- BPF helper and map argument evidence;
-- immutable capture bundles with host capability manifest.
+The authoritative status is the executable
+[pwru parity matrix](pwru-parity.md), not a prose roadmap. Future work starts
+as an observation request and moves into the supported matrix only after
+unit, contract, and relevant live-kernel evidence exist.

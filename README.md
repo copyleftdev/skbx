@@ -1,219 +1,247 @@
+<p align="center">
+  <img src="assets/skbx-banner.svg" alt="skbx — packet paths, with receipts" width="100%">
+</p>
+
+<p align="center">
+  <a href="https://github.com/copyleftdev/skbx/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/copyleftdev/skbx/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="License: AGPL-3.0-or-later" src="https://img.shields.io/badge/license-AGPL--3.0--or--later-c8f66b"></a>
+  <img alt="Linux" src="https://img.shields.io/badge/platform-Linux-5de4d0">
+  <img alt="Rust 1.85+" src="https://img.shields.io/badge/rust-1.85%2B-9b8cff">
+</p>
+
 # skbx
 
-**An agent-first packet-path instrument for Linux.**
+`skbx` shows where a packet went inside Linux—and keeps the receipts.
 
-`skbx` is a Rust/eBPF tracer inspired by `pwru`, designed around the
-agent-first contracts proven by entropyx and WhatTheDiff:
+It observes kernel networking functions, TC/XDP programs, packet
+transformations, tunnels, drops, and selected BPF helper activity with
+Rust and CO-RE eBPF. Every observation lands in a bounded, replayable evidence
+stream with stable handles and explicit loss telemetry.
 
-- the deterministic engine is the source of truth;
-- `skbx describe` teaches an agent how to use the tool;
-- `skbx schema` publishes a versioned machine contract;
-- live output is bounded JSONL with explicit start/end envelopes;
-- every event has a stable evidence handle;
-- kernel/user-space loss and decode failures are first-class telemetry;
-- replay is deterministic and never needs root;
-- replay assembles bounded per-SKB routes and emits consensus/outlier handles;
-- caches and capture duration are bounded by default;
-- AI may explain captured evidence, but never manufactures observations.
+Use it when “the packet disappeared” is not a sufficient incident report.
 
-The working name is intentionally isolated to the CLI crate and can be
-changed without rewriting the engine.
+```text
+capture → event:8c6f… → replay → route:21b4… → explain
+            evidence          pattern          context
+```
 
-## Current vertical slice
+> Inspired by [pwru](https://github.com/cilium/pwru), rebuilt around an
+> agent-first contract: deterministic observations, machine-readable
+> capabilities, bounded state, and no invented evidence.
 
-The current implementation inspects kernel BTF and attaches one of five
-CO-RE eBPF kprobe programs according to the position of the
-`struct sk_buff *` argument. By default it discovers all matching attachable
-kernel functions; exact names and whole-name regular expressions can narrow
-the plan. Named or all loaded kernel modules can be included through their
-split BTF. It records:
+## The short version
 
-- monotonic kernel timestamp;
-- observed SKB address plus a capture-local monotonic clone/COW lineage ID;
-- probed instruction address and resolved symbol;
-- PID, CPU and command;
-- packet length, protocol, mark and interface index;
-- IPv4/IPv6 addresses (including bounded IPv6 extension chains),
-  TCP/UDP ports, ICMP type/code and TCP flags;
-- optional inner tunnel tuples from kernel-maintained SKB header offsets;
-- BTF-validated non-SKB functions associated through bounded frame-pointer
-  anchors, including exact callees decoded from JIT-compiled BPF programs,
-  with every event labeled `direct` or `stack`;
-- typed lookup/update/delete map-operation evidence with map identity and
-  explicitly bounded key/update-value bytes;
-- up to four target-BTF-validated scalar `skb->…` metadata projections,
-  including bounded pointer chains and typed per-field read errors;
-- parenthesized `&&`/`||` target-BTF-validated scalar `skb->…` filters,
-  normalized to at most four immutable comparisons;
-- optional bounded BTF renderings of `struct sk_buff` and
-  `struct skb_shared_info`, atomically correlated with their event and carrying
-  explicit byte, truncation and helper-error evidence;
-- exact entry observations for every currently loaded BTF-enabled TC
-  classifier or XDP program, discovered through the kernel program API and
-  attached with one shared-map fentry tracer per program;
-- up to four target-BTF-validated `xdp->…` scalar projections alongside XDP
-  packet length, interface, namespace, MTU, protocol and tuple evidence;
-- parenthesized `&&`/`||` target-BTF-validated `xdp->…` scalar filters,
-  normalized to at most four comparisons in a separate immutable XDP plan;
-- matched XDP entry/exit pairs correlated through bounded shared state, with
-  the exact numeric return code decoded as `XDP_ABORTED`, `XDP_DROP`,
-  `XDP_PASS`, `XDP_TX` or `XDP_REDIRECT` while retaining unknown codes;
-- caller, network namespace, MTU and the SKB control buffer;
-- BTF-decoded SKB drop reasons on supported drop functions;
-- kernel ring-buffer reserve failures.
+| You need to… | skbx gives you… |
+|---|---|
+| See the kernel path of an SKB | BTF-discovered kprobes with exact function evidence |
+| Follow clones, copies, COW, and XDP-to-SKB transitions | Capture-local lineage IDs and explicit match origin |
+| Inspect TC or XDP behavior | Exact program identity, entry/exit pairing, and decoded XDP actions |
+| Filter without guessing field layouts | Target-BTF-checked packet and metadata expressions |
+| Hand evidence to a human or agent | Versioned JSONL, stable handles, deterministic replay, and `explain` |
+| Know whether the trace is trustworthy | Reserve, recursion, read, decode, enrichment, and output telemetry |
 
-Capture also supports in-kernel mark/interface/netns filters, outer and
-independent inner-L2/inner-L3 libpcap expressions, optional kernel stacks,
-bounded SKB clone/copy/COW tracking and an agent-safe `--ready-file`
-synchronization point. Every event labels whether it matched the configured
-filter, a tracked identity, or a stack association. Named interfaces are
-resolved in the namespace selected by `--filter-netns`, and device-less
-output SKBs fall back to their socket namespace.
+## First packet
 
-The audited compatibility surface and its executable evidence are recorded in
-[`docs/pwru-parity.md`](docs/pwru-parity.md). XDP-to-SKB lineage is proven for
-the instrumented frame-transport paths; unobserved driver-private copying
-paths remain an explicit evidence boundary rather than a silent claim.
-
-## Commands
+Build prerequisites are listed below. Once `skbx` is installed:
 
 ```console
-skbx describe --format json
-skbx schema
+# 1. Check the host.
 skbx doctor --json
-skbx plan --json
-skbx plan --filter-func 'ip.*'
-sudo skbx capture --duration 10 --format jsonl --output trace.jsonl
-sudo skbx capture --probe tcp_v4_do_rcv --output-stack \
-  --timestamp absolute --output trace.jsonl tcp port 443
-sudo skbx capture --probe tcp_v4_do_rcv --format text \
-  --timestamp relative --output-caller --output-skb-cb \
-  --output-tcp-flags --output-netns-names --output -
-sudo skbx capture --probe ip_local_out --output-tunnel \
-  --filter-tunnel-pcap-l2 'ether proto 0x0800' \
-  --filter-tunnel-pcap-l3 'icmp' --output trace.jsonl udp port 4789
+
+# 2. See exactly what would attach—without attaching it.
+skbx plan --filter-func 'ip.*' --json
+
+# 3. Capture ten bounded seconds of ICMP evidence.
 sudo skbx capture --probe ip_rcv \
-  --output-skb-metadata 'skb->mark' \
-  --output-skb-metadata 'skb->dev->ifindex' --output trace.jsonl
-sudo skbx capture --probe ip_rcv \
-  --filter-skb-expr 'skb->mark = 0b101010 && skb->protocol = 0x0800' \
-  --output trace.jsonl
-sudo skbx capture --probe ip_rcv --output-skb \
-  --output-skb-shared-info --output trace.jsonl
-sudo skbx capture --filter-trace-tc \
-  --output-skb-metadata 'skb->mark' --output-skb \
-  --output-skb-shared-info --output trace.jsonl
-sudo skbx capture --filter-trace-xdp \
-  --filter-xdp-expr '(xdp->frame_sz = 0 || xdp->frame_sz >= 0o1)' \
-  --output-xdp-metadata 'xdp->frame_sz' \
-  --output-xdp-metadata 'xdp->rxq->dev->ifindex' \
-  --output trace.jsonl icmp
-sudo skbx capture --probe ip_rcv --output trace.jsonl \
-  --output-max-bytes 104857600 --output-max-backups 4 \
-  --output-max-age-days 7 --output-compress
+  --duration 10 \
+  --output trace.jsonl \
+  icmp
+
+# 4. Rebuild packet routes without root.
 skbx replay trace.jsonl --format json
+
+# 5. Follow any event handle back to its surrounding evidence.
 skbx explain trace.jsonl event:<handle>
 ```
 
-Replay route patterns contain example `event:` handles, so an agent can move
-from a consensus or outlier directly back to the raw observations with
-`explain`.
+Want a fast human view instead?
 
-`capture` is bounded to 10 seconds and 100,000 events unless explicitly
-overridden. Exit codes are stable: `0` success, `1` runtime failure, `2`
-usage error, `3` incomplete capture or reliability gate failure.
+```console
+sudo skbx capture --probe tcp_v4_do_rcv \
+  --format text \
+  --timestamp relative \
+  --output-caller \
+  --output-tcp-flags \
+  --output -
+```
 
-Rotated output is JSONL-only and uses exact byte and backup ceilings. The
-active file is the newest segment; `.1`, `.2`, and so on are older, with
-optional `.gz`. Every retained segment has matching capture envelopes and can
-be replayed or explained on its own; input gzip is detected by magic bytes.
+## Built for operators *and* agents
 
-Text capture uses stable pwru-shaped core columns for SKB, CPU/process/PID,
-timestamp, netns, mark, interface, protocol, MTU, length, tuple and function.
-It supports pwru-compatible `--output-meta=false`, `--output-tuple=false`,
-`--output-caller`, `--output-skb-cb`, `--output-tcp-flags`,
-`--output-netns-names` and `--netns-names-max-length` presentation controls.
-Agent provenance remains visible as `ASSOC`/`ORIGIN`; metadata, control buffer,
-tunnel, map, stack and BTF evidence use deterministic indented records. JSON
-always retains the complete evidence regardless of text presentation flags.
+The CLI explains itself before an agent touches the host:
 
-## Build
+```console
+skbx describe --format json  # commands, capabilities, limits, invariants
+skbx schema                  # the versioned traceq JSON Schema
+skbx doctor --json           # host prerequisites with actionable evidence
+skbx plan --json             # deterministic attachment plan
+```
 
-Prerequisites:
+The native engine remains the source of truth. An AI system may explain a
+captured event, but it cannot manufacture one. Machine output stays on stdout;
+diagnostics stay on stderr; missing footers and observation loss are explicit.
 
+## What it can observe
+
+- BTF-discovered `struct sk_buff *` arguments in positions 1–5;
+- individual kprobes and signature-grouped kprobe-multi attachment;
+- base and split BTF from named or all loaded kernel modules;
+- IPv4/IPv6, bounded extension chains, TCP/UDP/ICMP, fragments, and TCP flags;
+- mark, interface, namespace, MTU, socket fallback, and caller evidence;
+- independent outer and inner-L2/inner-L3 libpcap predicates;
+- SKB clone/copy/COW lineage and XDP frame-to-SKB correlation;
+- stack-associated non-SKB teardown paths through logical free;
+- JIT-discovered BPF helper calls and bounded map key/value evidence;
+- TC entry observations and paired XDP entry/exit actions;
+- BTF-checked SKB/XDP metadata, bitfields, byte-order-aware filters, and
+  bounded boolean expressions;
+- atomic `sk_buff` and `skb_shared_info` BTF renderings;
+- named SKB drop reasons, kernel stacks, and the SKB control buffer;
+- exact capture limits, rotation boundaries, and reliability footers.
+
+The full, evidence-backed comparison with pwru lives in
+[the parity matrix](docs/pwru-parity.md). Design invariants and the hot-path
+model live in [the architecture guide](docs/architecture.md).
+
+## Useful captures
+
+### Follow a marked packet through transformations
+
+```console
+sudo skbx capture \
+  --filter-mark 0x2a \
+  --filter-track-skb \
+  --output trace.jsonl
+```
+
+### Filter on target-kernel fields
+
+```console
+sudo skbx capture --probe ip_rcv \
+  --filter-skb-expr \
+    'skb->mark = 0b101010 && skb->protocol = 0x0800' \
+  --output-skb-metadata 'skb->dev->ifindex' \
+  --output trace.jsonl
+```
+
+### Observe loaded XDP programs
+
+```console
+sudo skbx capture \
+  --filter-trace-xdp \
+  --filter-xdp-expr \
+    '(xdp->frame_sz = 0 || xdp->frame_sz >= 0o1)' \
+  --output-xdp-metadata 'xdp->rxq->dev->ifindex' \
+  --output trace.jsonl \
+  icmp
+```
+
+### Inspect a tunnel
+
+```console
+sudo skbx capture --probe ip_local_out \
+  --output-tunnel \
+  --filter-tunnel-pcap-l2 'ether proto 0x0800' \
+  --filter-tunnel-pcap-l3 'icmp' \
+  --output trace.jsonl \
+  udp port 4789
+```
+
+Run `skbx capture --help` for the complete surface.
+
+## Evidence model
+
+The native stream is `traceq/0.1.0`: append-only JSONL bounded by a mandatory
+header and footer.
+
+```text
+capture_start
+event
+event
+…
+capture_end
+```
+
+Each event carries a stable `event:` handle. Replay groups ordered events into
+bounded packet routes, reports consensus and outliers, and emits `route:`
+handles. `explain` retrieves the target event plus nearby evidence sharing the
+same packet identity.
+
+If the footer is absent—or reports reserve failures, tracer recursion misses,
+decode failures, enrichment failures, or output failures—the capture is not
+silently presented as complete.
+
+## Install from source
+
+### Requirements
+
+- Linux on x86_64 or arm64;
 - Rust 1.85 or newer;
 - Clang/LLVM with the BPF backend;
 - `bpftool`;
-- libelf development headers and library;
-- libpcap development headers and library;
-- a Linux kernel exposing `/sys/kernel/btf/vmlinux`.
+- libelf and libpcap development packages;
+- a kernel exposing `/sys/kernel/btf/vmlinux`;
+- root or appropriate BPF/perf capabilities for live capture.
+
+On Ubuntu:
 
 ```console
-cargo build --release
-cargo test --workspace
+sudo apt-get install bpftool clang llvm libelf-dev libpcap-dev pkg-config
 ```
 
-The build script generates `vmlinux.h` into Cargo's output directory, then
-compiles and embeds the CO-RE eBPF object. Generated kernel headers never
-dirty the source tree.
+Then build:
 
-Use `make check` for the same formatting, test and strict-lint gates run by
-CI. `make benchmark` executes the ignored 100,000-event replay throughput
-test in release mode.
-
-On a disposable Linux test host, `sudo scripts/live-tunnel-test.sh
-target/debug/skbx` creates two temporary network namespaces, verifies VXLAN
-outer/inner filtering and tuple evidence, then removes both namespaces.
-`sudo scripts/live-netns-test.sh target/debug/skbx` similarly verifies
-cross-namespace interface lookup and the socket namespace fallback.
-`sudo scripts/live-stack-test.sh target/debug/skbx` verifies that a direct
-`ip_rcv` observation and a requested non-SKB `fib_table_lookup` call retain
-the same evidence-addressed SKB identity. `sudo
-scripts/live-stack-lifetime-test.sh target/debug/skbx` verifies ordered
-same-SKB evidence across the logical-free teardown path:
-`consume_skb` → `dst_release` → `kmem_cache_free`. The association is removed
-at `kfree_skbmem`, before the SKB allocation itself is returned. `sudo
-scripts/live-bpf-helper-test.sh target/debug/skbx` loads an isolated TC
-classifier and proves automatic JIT-callee discovery with ordered
-`tcf_classify` → map-helper evidence. `sudo
-scripts/live-skb-replacement-test.sh target/debug/skbx` forces clone and veth
-XDP copy-on-write transitions, then proves that three observed SKB addresses
-retain one canonical identity through replay and `explain`. `sudo
-scripts/live-xdp-lineage-test.sh target/debug/skbx` proves that identity also
-survives XDP_TX frame transport into a newly allocated SKB, labeled
-`tracked_xdp`. `sudo scripts/live-skb-filter-test.sh target/debug/skbx`
-proves that BTF-compiled scalar predicates reject unmarked traffic and retain
-marked traffic with matching projected values. `sudo
-scripts/live-btf-dump-test.sh target/debug/skbx` proves atomic `sk_buff` and
-shared-info renderings alongside an existing metadata projection. `sudo
-scripts/live-text-output-test.sh target/debug/skbx` proves named-namespace,
-caller, control-buffer and TCP-flag presentation plus metadata/tuple
-suppression in isolated expanded and compact text captures. `sudo
-scripts/live-tc-program-test.sh target/debug/skbx` loads an isolated TC
-classifier and proves BTF entry discovery, dynamic fentry attachment, exact
-program identity, read-clean SKB metadata and atomic `sk_buff` plus
-`skb_shared_info` renderings. `sudo
-scripts/live-xdp-program-test.sh target/debug/skbx` proves dynamic-only XDP
-attachment with exact paired entry/exit identity, decoded `XDP_PASS` action,
-L2 pcap filtering, tuple decoding and target-BTF-checked `xdp_buff` filters and
-metadata.
-
-## Architecture
-
-```text
-kernel kprobes
-    │ fixed-size records + exact reserve-failure counter
-    ▼
-BPF ring buffer
-    ▼
-skbx-sensor ── raw, validated events
-    ▼
-skbx-core ─── handles, bounded state, symbol evidence, summaries
-    ▼
-skbx-contract ── traceq/0.1.0 JSONL + schema
-    ▼
-CLI / agent / CI
+```console
+git clone https://github.com/copyleftdev/skbx.git
+cd skbx
+cargo build --release --locked
+sudo install -m 0755 target/release/skbx /usr/local/bin/skbx
+skbx doctor
 ```
 
-See [docs/pwru-parity.md](docs/pwru-parity.md) for the auditable feature
-matrix and [docs/architecture.md](docs/architecture.md) for design invariants.
+Replay, schema inspection, and evidence lookup do not require root.
+
+## Development
+
+```console
+make check      # fmt + tests + clippy -D warnings
+make build      # optimized release build
+make benchmark  # deterministic 100k-event replay benchmark
+```
+
+The build generates `vmlinux.h` in Cargo’s output directory and embeds the
+compiled CO-RE object. Generated kernel headers never dirty the source tree.
+
+Root-required integration gates use disposable network namespaces and clean up
+after themselves. See [the validation guide](docs/validation.md) before
+running them.
+
+## Community
+
+Network debugging gets better when evidence is easy to share.
+
+- Found a bug? Use the structured
+  [bug report](https://github.com/copyleftdev/skbx/issues/new?template=bug.yml).
+- Have a packet path skbx cannot explain yet? Open an
+  [observation request](https://github.com/copyleftdev/skbx/issues/new?template=observation.yml).
+- Want to contribute? Start with [CONTRIBUTING.md](CONTRIBUTING.md).
+- Found a security issue? Please follow [SECURITY.md](SECURITY.md), not a
+  public issue.
+
+Bring a kernel version, the exact command, `doctor --json`, and the reliability
+footer. Packet folklore is welcome; packet evidence is better.
+
+## License
+
+Userspace is licensed under
+[AGPL-3.0-or-later](LICENSE). The eBPF program under `bpf/` is
+GPL-2.0-only.
