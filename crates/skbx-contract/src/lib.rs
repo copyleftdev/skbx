@@ -49,7 +49,7 @@ pub struct Defaults {
 impl Describe {
     pub fn current(version: &'static str) -> Self {
         let supported = CapabilityStatus::Supported;
-        let planned = CapabilityStatus::Planned;
+        let partial = CapabilityStatus::Partial;
         Self {
             name: "skbx",
             version,
@@ -240,10 +240,10 @@ impl Describe {
                 },
                 Capability {
                     name: "tc-xdp-observation",
-                    status: planned,
-                    requires: "dynamic BPF program links",
-                    cost: "bounded_kernel_reads",
-                    description: "correlate TC and XDP paths without inventing missing evidence",
+                    status: partial,
+                    requires: "BPF program enumeration, program BTF and fentry",
+                    cost: "one shared-map fentry link per eligible TC program",
+                    description: "emit exact TC program identity at entry; XDP and TC BTF structure dumps remain planned",
                 },
                 Capability {
                     name: "route-consensus-and-outliers",
@@ -426,6 +426,21 @@ pub struct BtfDump {
     pub read_error: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BpfProgramKind {
+    Tc,
+    Xdp,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BpfProgramRef {
+    pub id: u32,
+    pub name: String,
+    pub entry: String,
+    pub kind: BpfProgramKind,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventAssociation {
@@ -478,6 +493,8 @@ pub struct TraceEvent {
     pub metadata: Vec<MetadataValue>,
     #[serde(default)]
     pub btf_dumps: Vec<BtfDump>,
+    #[serde(default)]
+    pub bpf_program: Option<BpfProgramRef>,
     pub packet: PacketMeta,
     #[serde(default)]
     pub tuple: Option<PacketTuple>,
@@ -521,6 +538,8 @@ pub struct CaptureStart {
     pub metadata_projections: Vec<MetadataProjection>,
     #[serde(default)]
     pub btf_dump_types: Vec<String>,
+    #[serde(default)]
+    pub bpf_programs: Vec<BpfProgramRef>,
     #[serde(default)]
     pub segment: Option<CaptureSegmentStart>,
     #[serde(default)]
@@ -707,6 +726,10 @@ pub fn json_schema() -> serde_json::Value {
                         "maxItems": 2,
                         "uniqueItems": true
                     },
+                    "bpf_programs": {
+                        "type": "array",
+                        "items": {"$ref": "#/$defs/BpfProgramRef"}
+                    },
                     "segment": {
                         "oneOf": [
                             {"$ref": "#/$defs/CaptureSegmentStart"},
@@ -775,6 +798,12 @@ pub fn json_schema() -> serde_json::Value {
                         "type": "array",
                         "items": {"$ref": "#/$defs/BtfDump"},
                         "maxItems": 2
+                    },
+                    "bpf_program": {
+                        "oneOf": [
+                            {"$ref": "#/$defs/BpfProgramRef"},
+                            {"type": "null"}
+                        ]
                     },
                     "packet": {"$ref": "#/$defs/PacketMeta"},
                     "tuple": {
@@ -932,6 +961,17 @@ pub fn json_schema() -> serde_json::Value {
                 },
                 "additionalProperties": false
             },
+            "BpfProgramRef": {
+                "type": "object",
+                "required": ["id", "name", "entry", "kind"],
+                "properties": {
+                    "id": {"type": "integer", "minimum": 1},
+                    "name": {"type": "string"},
+                    "entry": {"type": "string"},
+                    "kind": {"enum": ["tc", "xdp"]}
+                },
+                "additionalProperties": false
+            },
             "MetadataUnsigned": {
                 "type": "object",
                 "required": ["kind", "value"],
@@ -1064,7 +1104,7 @@ mod tests {
         }));
         assert!(
             describe.capabilities.iter().any(|c| {
-                c.name == "tc-xdp-observation" && c.status == CapabilityStatus::Planned
+                c.name == "tc-xdp-observation" && c.status == CapabilityStatus::Partial
             })
         );
         assert_eq!(describe.defaults.max_events, 100_000);

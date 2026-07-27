@@ -1,4 +1,4 @@
-.PHONY: check build benchmark live-tunnel live-netns live-stack live-stack-lifetime live-bpf-helper live-skb-replacement live-xdp-lineage live-metadata live-skb-filter live-btf-dump live-rotation
+.PHONY: check build benchmark live-tunnel live-netns live-stack live-stack-lifetime live-bpf-helper live-tc-program live-skb-replacement live-xdp-lineage live-metadata live-skb-filter live-btf-dump live-rotation
 
 check:
 	cargo fmt --all -- --check
@@ -30,6 +30,10 @@ live-stack-lifetime:
 live-bpf-helper:
 	cargo build --locked --offline
 	sudo ./scripts/live-bpf-helper-test.sh target/debug/skbx
+
+live-tc-program:
+	cargo build --locked --offline
+	sudo ./scripts/live-tc-program-test.sh target/debug/skbx
 
 live-skb-replacement:
 	cargo build --locked --offline

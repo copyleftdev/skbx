@@ -121,11 +121,7 @@ pub fn replay<R: BufRead>(reader: R) -> Result<TraceSummary, ReplayError> {
                         "replay exceeds bounded limit of {MAX_REPLAY_EVENTS} events"
                     )));
                 }
-                let function = event
-                    .function
-                    .symbol
-                    .clone()
-                    .unwrap_or_else(|| event.function.address.clone());
+                let function = event_function_name(&event);
                 *functions.entry(function.clone()).or_insert(0) += 1;
                 *processes.entry(event.command.clone()).or_insert(0) += 1;
                 let identity = event_identity(&event).to_owned();
@@ -379,6 +375,28 @@ fn event_identity(event: &TraceEvent) -> &str {
     }
 }
 
+fn event_function_name(event: &TraceEvent) -> String {
+    event.bpf_program.as_ref().map_or_else(
+        || {
+            event
+                .function
+                .symbol
+                .clone()
+                .unwrap_or_else(|| event.function.address.clone())
+        },
+        |program| {
+            let kind = match program.kind {
+                skbx_contract::BpfProgramKind::Tc => "tc",
+                skbx_contract::BpfProgramKind::Xdp => "xdp",
+            };
+            format!(
+                "bpf:{kind}:{}:{}/{}",
+                program.id, program.name, program.entry
+            )
+        },
+    )
+}
+
 fn validate_event(event: &TraceEvent, start: &CaptureStart) -> Result<(), ReplayError> {
     if event.schema != CONTRACT_VERSION {
         return Err(ReplayError::Contract(format!(
@@ -390,6 +408,14 @@ fn validate_event(event: &TraceEvent, start: &CaptureStart) -> Result<(), Replay
         return Err(ReplayError::Contract(format!(
             "event {} capture_id does not match stream",
             event.seq
+        )));
+    }
+    if let Some(program) = &event.bpf_program
+        && !start.bpf_programs.contains(program)
+    {
+        return Err(ReplayError::Contract(format!(
+            "event {} references undeclared BPF program {}",
+            event.seq, program.id
         )));
     }
     if !event.handle.starts_with("event:")
@@ -508,8 +534,54 @@ pub fn explain_with_context<R1: BufRead, R2: BufRead>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skbx_contract::{CaptureLimits, FunctionRef, PacketMeta, StopReason};
+    use skbx_contract::{
+        BpfProgramKind, BpfProgramRef, CaptureLimits, FunctionRef, PacketMeta, StopReason,
+    };
     use std::io::Cursor;
+
+    #[test]
+    fn route_name_prefers_exact_bpf_program_identity() {
+        let event = TraceEvent {
+            schema: CONTRACT_VERSION.into(),
+            capture_id: "c1".into(),
+            seq: 0,
+            handle: "event:0".into(),
+            timestamp_ns: 0,
+            presentation_timestamp: None,
+            cpu: 0,
+            pid: 0,
+            command: String::new(),
+            skb: "0x1".into(),
+            identity: "0x1".into(),
+            function: FunctionRef {
+                address: "0x0".into(),
+                symbol: None,
+            },
+            association: Default::default(),
+            match_origin: Default::default(),
+            caller: None,
+            stack: Vec::new(),
+            parameters: Default::default(),
+            drop_reason: None,
+            bpf_map: None,
+            metadata: Vec::new(),
+            btf_dumps: Vec::new(),
+            bpf_program: Some(BpfProgramRef {
+                id: 42,
+                name: "cls_test".into(),
+                entry: "classify_packet".into(),
+                kind: BpfProgramKind::Tc,
+            }),
+            packet: PacketMeta::default(),
+            tuple: None,
+            tunnel_tuple: None,
+        };
+
+        assert_eq!(
+            event_function_name(&event),
+            "bpf:tc:42:cls_test/classify_packet"
+        );
+    }
 
     fn fixture(include_end: bool) -> String {
         let start = Envelope::CaptureStart(CaptureStart {
@@ -525,6 +597,7 @@ mod tests {
             output_tunnel: false,
             metadata_projections: Vec::new(),
             btf_dump_types: Vec::new(),
+            bpf_programs: Vec::new(),
             segment: None,
             filters: Default::default(),
             limits: CaptureLimits {
@@ -558,6 +631,7 @@ mod tests {
             bpf_map: None,
             metadata: Vec::new(),
             btf_dumps: Vec::new(),
+            bpf_program: None,
             packet: PacketMeta {
                 len: 64,
                 protocol: 0x800,
@@ -688,6 +762,7 @@ mod tests {
             output_tunnel: false,
             metadata_projections: Vec::new(),
             btf_dump_types: Vec::new(),
+            bpf_programs: Vec::new(),
             segment: None,
             filters: Default::default(),
             limits: CaptureLimits {
@@ -725,6 +800,7 @@ mod tests {
                 bpf_map: None,
                 metadata: Vec::new(),
                 btf_dumps: Vec::new(),
+                bpf_program: None,
                 packet: PacketMeta {
                     len: 64,
                     protocol: 0x0800,

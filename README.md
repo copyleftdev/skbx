@@ -48,6 +48,9 @@ split BTF. It records:
 - optional bounded BTF renderings of `struct sk_buff` and
   `struct skb_shared_info`, atomically correlated with their event and carrying
   explicit byte, truncation and helper-error evidence;
+- exact entry observations for every currently loaded BTF-enabled TC
+  classifier, discovered through the kernel program API and attached with one
+  shared-map fentry tracer per program;
 - caller, network namespace, MTU and the SKB control buffer;
 - BTF-decoded SKB drop reasons on supported drop functions;
 - kernel ring-buffer reserve failures.
@@ -60,9 +63,9 @@ filter, a tracked identity, or a stack association. Named interfaces are
 resolved in the namespace selected by `--filter-netns`, and device-less
 output SKBs fall back to their socket namespace.
 
-It does **not yet** claim full `pwru` parity. TC/XDP program tracing,
-unrestricted expression syntax and XDP metadata projections remain explicit
-gaps.
+It does **not yet** claim full `pwru` parity. XDP program tracing, TC structure
+dumps, unrestricted expression syntax and XDP metadata projections remain
+explicit gaps.
 
 ## Commands
 
@@ -86,6 +89,8 @@ sudo skbx capture --probe ip_rcv \
   --output trace.jsonl
 sudo skbx capture --probe ip_rcv --output-skb \
   --output-skb-shared-info --output trace.jsonl
+sudo skbx capture --probe tcf_classify --filter-trace-tc \
+  --output-skb-metadata 'skb->mark' --output trace.jsonl
 sudo skbx capture --probe ip_rcv --output trace.jsonl \
   --output-max-bytes 104857600 --output-max-backups 4 --output-compress
 skbx replay trace.jsonl --format json
@@ -153,7 +158,10 @@ survives XDP_TX frame transport into a newly allocated SKB, labeled
 proves that BTF-compiled scalar predicates reject unmarked traffic and retain
 marked traffic with matching projected values. `sudo
 scripts/live-btf-dump-test.sh target/debug/skbx` proves atomic `sk_buff` and
-shared-info renderings alongside an existing metadata projection.
+shared-info renderings alongside an existing metadata projection. `sudo
+scripts/live-tc-program-test.sh target/debug/skbx` loads an isolated TC
+classifier and proves BTF entry discovery, dynamic fentry attachment, exact
+program identity and read-clean SKB metadata.
 
 ## Architecture
 

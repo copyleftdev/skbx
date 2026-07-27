@@ -228,6 +228,7 @@ mod tests {
             output_tunnel: false,
             metadata_projections: Vec::new(),
             btf_dump_types: Vec::new(),
+            bpf_programs: Vec::new(),
             segment: None,
             filters: CaptureFilters::default(),
             limits: CaptureLimits {
@@ -264,6 +265,7 @@ mod tests {
             bpf_map: None,
             metadata: Vec::new(),
             btf_dumps: Vec::new(),
+            bpf_program: None,
             packet: PacketMeta::default(),
             tuple: None,
             tunnel_tuple: None,

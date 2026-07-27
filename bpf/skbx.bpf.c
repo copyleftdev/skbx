@@ -60,6 +60,8 @@
 #define BTF_DUMP_SHARED_INFO (1u << 1)
 #define BTF_RECORD_COMPONENT_MAP (1u << 0)
 #define BTF_RECORD_COMPONENT_METADATA (1u << 1)
+#define BPF_PROGRAM_TC 1
+#define BPF_PROGRAM_XDP 2
 #define FILTER_COMPARE_EQUAL 1
 #define FILTER_COMPARE_NOT_EQUAL 2
 #define FILTER_COMPARE_LESS 3
@@ -231,6 +233,25 @@ struct skbx_btf_trace_event {
     __u8 _pad[7];
 };
 
+struct skbx_bpf_program {
+    __u32 id;
+    __u8 kind;
+    __u8 phase;
+    __u8 _pad[2];
+    char name[16];
+    char entry[64];
+};
+
+struct skbx_program_trace_event {
+    struct skbx_trace_event event;
+    struct skbx_bpf_program program;
+};
+
+struct skbx_program_metadata_trace_event {
+    struct skbx_program_trace_event program;
+    struct skbx_metadata metadata;
+};
+
 _Static_assert(sizeof(struct skbx_trace_event) == 224,
                "base trace record ABI changed");
 _Static_assert(sizeof(struct skbx_map_trace_event) == 320,
@@ -245,6 +266,12 @@ _Static_assert(sizeof(struct skbx_btf_dumps) == 8208,
                "BTF dump ABI changed");
 _Static_assert(sizeof(struct skbx_btf_trace_event) == 8576,
                "BTF trace record ABI changed");
+_Static_assert(sizeof(struct skbx_bpf_program) == 88,
+               "BPF program ABI changed");
+_Static_assert(sizeof(struct skbx_program_trace_event) == 312,
+               "BPF program trace record ABI changed");
+_Static_assert(sizeof(struct skbx_program_metadata_trace_event) == 352,
+               "BPF program metadata trace record ABI changed");
 
 struct kernel_stats {
     __u64 reserve_failures;
@@ -293,6 +320,11 @@ struct skbx_config {
     struct scalar_filter_condition scalar_filters[MAX_METADATA_PROJECTIONS];
     __u32 output_skb_dump;
     __u32 output_shared_info_dump;
+    __u32 dynamic_program_id;
+    __u8 dynamic_program_kind;
+    __u8 _pad0[3];
+    char dynamic_program_name[16];
+    char dynamic_program_entry[64];
 };
 
 const volatile struct skbx_config CONFIG = {};
@@ -1096,38 +1128,10 @@ static __always_inline void associate_stack(struct pt_regs *ctx,
     bpf_map_update_elem(&skb_stack_anchor, &skb_addr, &anchor, 0);
 }
 
-static __always_inline void fill_trace_event(
-    struct pt_regs *ctx, struct sk_buff *skb, __u8 association, int match,
-    __u64 identity, struct skbx_trace_event *event,
+static __always_inline void fill_skb_fields(
+    struct sk_buff *skb, struct skbx_trace_event *event,
     struct kernel_stats *counters)
 {
-    __builtin_memset(event, 0, sizeof(*event));
-    event->stack_id = -1;
-    event->association = association;
-    event->match_origin = association == ASSOCIATION_STACK ?
-        MATCH_STACK_ASSOCIATION :
-        (match == 3 ? MATCH_TRACKED_XDP :
-         (match == 2 ? MATCH_TRACKED_SKB : MATCH_FILTER));
-    event->timestamp_ns = bpf_ktime_get_ns();
-    event->skb_addr = (__u64)skb;
-    event->identity = identity;
-    event->function_ip = (__u64)PT_REGS_IP(ctx);
-    event->parameter_second = (__u64)PT_REGS_PARM2(ctx);
-    event->parameter_third = (__u64)PT_REGS_PARM3(ctx);
-    event->pid = bpf_get_current_pid_tgid() >> 32;
-    event->cpu = bpf_get_smp_processor_id();
-    bpf_get_current_comm(event->command, sizeof(event->command));
-    if (CONFIG.output_stack)
-        event->stack_id = bpf_get_stackid(ctx, &stack_traces, 0);
-
-#if defined(__TARGET_ARCH_x86)
-    if (bpf_probe_read_kernel(&event->caller_ip, sizeof(event->caller_ip),
-                              (void *)ctx->sp))
-        event->read_status |= READ_CALLER_FAILED;
-#elif defined(__TARGET_ARCH_arm64)
-    event->caller_ip = ctx->regs[30];
-#endif
-
     if (!skb) {
         event->read_status |= READ_LEN_FAILED | READ_PROTOCOL_FAILED |
                               READ_MARK_FAILED | READ_DEVICE_FAILED;
@@ -1163,6 +1167,41 @@ static __always_inline void fill_trace_event(
 
     if (event->read_status && counters)
         counters->read_failures++;
+}
+
+static __always_inline void fill_trace_event(
+    struct pt_regs *ctx, struct sk_buff *skb, __u8 association, int match,
+    __u64 identity, struct skbx_trace_event *event,
+    struct kernel_stats *counters)
+{
+    __builtin_memset(event, 0, sizeof(*event));
+    event->stack_id = -1;
+    event->association = association;
+    event->match_origin = association == ASSOCIATION_STACK ?
+        MATCH_STACK_ASSOCIATION :
+        (match == 3 ? MATCH_TRACKED_XDP :
+         (match == 2 ? MATCH_TRACKED_SKB : MATCH_FILTER));
+    event->timestamp_ns = bpf_ktime_get_ns();
+    event->skb_addr = (__u64)skb;
+    event->identity = identity;
+    event->function_ip = (__u64)PT_REGS_IP(ctx);
+    event->parameter_second = (__u64)PT_REGS_PARM2(ctx);
+    event->parameter_third = (__u64)PT_REGS_PARM3(ctx);
+    event->pid = bpf_get_current_pid_tgid() >> 32;
+    event->cpu = bpf_get_smp_processor_id();
+    bpf_get_current_comm(event->command, sizeof(event->command));
+    if (CONFIG.output_stack)
+        event->stack_id = bpf_get_stackid(ctx, &stack_traces, 0);
+
+#if defined(__TARGET_ARCH_x86)
+    if (bpf_probe_read_kernel(&event->caller_ip, sizeof(event->caller_ip),
+                              (void *)ctx->sp))
+        event->read_status |= READ_CALLER_FAILED;
+#elif defined(__TARGET_ARCH_arm64)
+    event->caller_ip = ctx->regs[30];
+#endif
+
+    fill_skb_fields(skb, event, counters);
 }
 
 static __always_inline void fill_metadata(struct sk_buff *skb,
@@ -1328,6 +1367,76 @@ DEFINE_SKB_PROBE(2)
 DEFINE_SKB_PROBE(3)
 DEFINE_SKB_PROBE(4)
 DEFINE_SKB_PROBE(5)
+
+static __always_inline void fill_program_trace_event(
+    void *ctx, struct sk_buff *skb, int match, __u64 identity,
+    struct skbx_program_trace_event *record,
+    struct kernel_stats *counters)
+{
+    __builtin_memset(record, 0, sizeof(*record));
+    record->event.stack_id = -1;
+    record->event.association = ASSOCIATION_DIRECT;
+    record->event.match_origin =
+        match == 3 ? MATCH_TRACKED_XDP :
+        (match == 2 ? MATCH_TRACKED_SKB : MATCH_FILTER);
+    record->event.timestamp_ns = bpf_ktime_get_ns();
+    record->event.skb_addr = (__u64)skb;
+    record->event.identity = identity;
+    record->event.pid = bpf_get_current_pid_tgid() >> 32;
+    record->event.cpu = bpf_get_smp_processor_id();
+    bpf_get_current_comm(record->event.command,
+                         sizeof(record->event.command));
+    if (CONFIG.output_stack)
+        record->event.stack_id = bpf_get_stackid(ctx, &stack_traces, 0);
+    fill_skb_fields(skb, &record->event, counters);
+    record->program.id = CONFIG.dynamic_program_id;
+    record->program.kind = CONFIG.dynamic_program_kind;
+#pragma unroll
+    for (int i = 0; i < sizeof(record->program.name); i++)
+        record->program.name[i] = CONFIG.dynamic_program_name[i];
+#pragma unroll
+    for (int i = 0; i < sizeof(record->program.entry); i++)
+        record->program.entry[i] = CONFIG.dynamic_program_entry[i];
+}
+
+SEC("fentry")
+int skbx_trace_tc(__u64 *ctx)
+{
+    struct sk_buff *skb = (struct sk_buff *)ctx[0];
+    struct kernel_stats *counters = stats();
+    __u64 identity = (__u64)skb;
+    int match = should_trace(skb, counters, &identity);
+
+    if (!match)
+        return 0;
+    if (CONFIG.metadata_count) {
+        struct skbx_program_metadata_trace_event *record =
+            bpf_ringbuf_reserve(&events, sizeof(*record), 0);
+
+        if (!record) {
+            if (counters)
+                counters->reserve_failures++;
+            return 0;
+        }
+        fill_program_trace_event(ctx, skb, match, identity,
+                                 &record->program, counters);
+        fill_metadata(skb, &record->metadata, counters);
+        bpf_ringbuf_submit(record, 0);
+    } else {
+        struct skbx_program_trace_event *record =
+            bpf_ringbuf_reserve(&events, sizeof(*record), 0);
+
+        if (!record) {
+            if (counters)
+                counters->reserve_failures++;
+            return 0;
+        }
+        fill_program_trace_event(ctx, skb, match, identity, record,
+                                 counters);
+        bpf_ringbuf_submit(record, 0);
+    }
+    return 0;
+}
 
 SEC("kprobe")
 int skbx_stack_associated(struct pt_regs *ctx)

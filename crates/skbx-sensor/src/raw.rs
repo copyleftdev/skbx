@@ -30,6 +30,8 @@ pub const BTF_DUMP_SHARED_INFO: u8 = 1 << 1;
 pub const BTF_RECORD_COMPONENT_MAP: u8 = 1 << 0;
 pub const BTF_RECORD_COMPONENT_METADATA: u8 = 1 << 1;
 pub const MAX_BTF_DUMP_BYTES: usize = 4092;
+pub const BPF_PROGRAM_TC: u8 = 1;
+pub const BPF_PROGRAM_XDP: u8 = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -264,6 +266,70 @@ impl RawBtfTraceEvent {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RawBpfProgram {
+    pub id: u32,
+    pub kind: u8,
+    pub phase: u8,
+    pub _pad: [u8; 2],
+    pub name: [u8; 16],
+    pub entry: [u8; 64],
+}
+
+impl Default for RawBpfProgram {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            kind: 0,
+            phase: 0,
+            _pad: [0; 2],
+            name: [0; 16],
+            entry: [0; 64],
+        }
+    }
+}
+
+impl RawBpfProgram {
+    pub fn name_string(&self) -> String {
+        nul_terminated(&self.name)
+    }
+
+    pub fn entry_string(&self) -> String {
+        nul_terminated(&self.entry)
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RawProgramTraceEvent {
+    pub event: RawTraceEvent,
+    pub program: RawBpfProgram,
+}
+
+impl RawProgramTraceEvent {
+    pub const BYTE_LEN: usize = std::mem::size_of::<Self>();
+
+    fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        copy_record(bytes)
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RawProgramMetadataTraceEvent {
+    pub program: RawProgramTraceEvent,
+    pub metadata: RawMetadata,
+}
+
+impl RawProgramMetadataTraceEvent {
+    pub const BYTE_LEN: usize = std::mem::size_of::<Self>();
+
+    fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        copy_record(bytes)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RawObservation {
     Trace(RawTraceEvent),
@@ -271,6 +337,8 @@ pub enum RawObservation {
     Map(RawMapTraceEvent),
     MapMetadata(RawMapMetadataTraceEvent),
     Btf(Box<RawBtfTraceEvent>),
+    Program(RawProgramTraceEvent),
+    ProgramMetadata(RawProgramMetadataTraceEvent),
 }
 
 impl RawObservation {
@@ -285,6 +353,10 @@ impl RawObservation {
             RawMapMetadataTraceEvent::from_bytes(bytes).map(Self::MapMetadata)
         } else if bytes.len() == RawBtfTraceEvent::BYTE_LEN {
             RawBtfTraceEvent::from_bytes(bytes).map(Self::Btf)
+        } else if bytes.len() == RawProgramTraceEvent::BYTE_LEN {
+            RawProgramTraceEvent::from_bytes(bytes).map(Self::Program)
+        } else if bytes.len() == RawProgramMetadataTraceEvent::BYTE_LEN {
+            RawProgramMetadataTraceEvent::from_bytes(bytes).map(Self::ProgramMetadata)
         } else {
             None
         }
@@ -297,15 +369,17 @@ impl RawObservation {
         Option<RawMapTraceEvent>,
         Option<RawMetadata>,
         Option<RawBtfDumps>,
+        Option<RawBpfProgram>,
     ) {
         match self {
-            Self::Trace(event) => (event, None, None, None),
-            Self::Metadata(record) => (record.event, None, Some(record.metadata), None),
-            Self::Map(map) => (map.event, Some(map), None, None),
+            Self::Trace(event) => (event, None, None, None, None),
+            Self::Metadata(record) => (record.event, None, Some(record.metadata), None, None),
+            Self::Map(map) => (map.event, Some(map), None, None, None),
             Self::MapMetadata(record) => (
                 record.map.event,
                 Some(record.map),
                 Some(record.metadata),
+                None,
                 None,
             ),
             Self::Btf(record) => {
@@ -313,10 +387,32 @@ impl RawObservation {
                     .then_some(record.record.map);
                 let metadata = (record.components & BTF_RECORD_COMPONENT_METADATA != 0)
                     .then_some(record.record.metadata);
-                (record.record.map.event, map, metadata, Some(record.dumps))
+                (
+                    record.record.map.event,
+                    map,
+                    metadata,
+                    Some(record.dumps),
+                    None,
+                )
             }
+            Self::Program(record) => (record.event, None, None, None, Some(record.program)),
+            Self::ProgramMetadata(record) => (
+                record.program.event,
+                None,
+                Some(record.metadata),
+                None,
+                Some(record.program.program),
+            ),
         }
     }
+}
+
+fn nul_terminated(bytes: &[u8]) -> String {
+    let end = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
+    String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
 fn copy_record<T: Copy + Default>(bytes: &[u8]) -> Option<T> {
@@ -381,6 +477,9 @@ mod tests {
         assert_eq!(RawMapMetadataTraceEvent::BYTE_LEN, 360);
         assert_eq!(std::mem::size_of::<RawBtfDumps>(), 8208);
         assert_eq!(RawBtfTraceEvent::BYTE_LEN, 8576);
+        assert_eq!(std::mem::size_of::<RawBpfProgram>(), 88);
+        assert_eq!(RawProgramTraceEvent::BYTE_LEN, 312);
+        assert_eq!(RawProgramMetadataTraceEvent::BYTE_LEN, 352);
         assert!(
             std::mem::size_of::<RawObservation>() <= 368,
             "optional BTF dumps must not inflate compact queued observations"
@@ -405,14 +504,23 @@ mod tests {
             RawObservation::from_bytes(&[0; 8576]),
             Some(RawObservation::Btf(_))
         ));
+        assert!(matches!(
+            RawObservation::from_bytes(&[0; 312]),
+            Some(RawObservation::Program(_))
+        ));
+        assert!(matches!(
+            RawObservation::from_bytes(&[0; 352]),
+            Some(RawObservation::ProgramMetadata(_))
+        ));
         let record = RawBtfTraceEvent {
             components: BTF_RECORD_COMPONENT_MAP | BTF_RECORD_COMPONENT_METADATA,
             ..Default::default()
         };
-        let (_, map, metadata, dumps) = RawObservation::Btf(Box::new(record)).into_parts();
+        let (_, map, metadata, dumps, program) = RawObservation::Btf(Box::new(record)).into_parts();
         assert!(map.is_some());
         assert!(metadata.is_some());
         assert!(dumps.is_some());
+        assert!(program.is_none());
         assert!(RawObservation::from_bytes(&[0; 319]).is_none());
     }
 
@@ -426,5 +534,41 @@ mod tests {
             event.read_failures(),
             vec!["tuple", "caller", "tunnel_tuple"]
         );
+    }
+
+    #[test]
+    fn program_record_preserves_identity_and_metadata() {
+        let mut program = RawBpfProgram {
+            id: 42,
+            kind: BPF_PROGRAM_TC,
+            ..Default::default()
+        };
+        program.name[..8].copy_from_slice(b"cls_test");
+        program.entry[..15].copy_from_slice(b"classify_packet");
+        let record = RawProgramMetadataTraceEvent {
+            program: RawProgramTraceEvent {
+                event: RawTraceEvent {
+                    skb_addr: 0xfeed,
+                    ..Default::default()
+                },
+                program,
+            },
+            metadata: RawMetadata {
+                count: 1,
+                values: [7, 0, 0, 0],
+                ..Default::default()
+            },
+        };
+
+        let (event, map, metadata, dumps, program) =
+            RawObservation::ProgramMetadata(record).into_parts();
+        assert_eq!(event.skb_addr, 0xfeed);
+        assert!(map.is_none());
+        assert_eq!(metadata.expect("metadata").values[0], 7);
+        assert!(dumps.is_none());
+        let program = program.expect("program");
+        assert_eq!(program.id, 42);
+        assert_eq!(program.name_string(), "cls_test");
+        assert_eq!(program.entry_string(), "classify_packet");
     }
 }

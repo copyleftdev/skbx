@@ -2,10 +2,10 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use nix::sched::{CloneFlags, setns};
 use skbx_contract::{
-    BpfMapOperation, BpfMapOperationKind, BtfDump, CONTRACT_VERSION, CaptureEnd, CaptureFilters,
-    CaptureLimits, CaptureStart, Describe, Envelope, EventAssociation, FunctionRef, MatchOrigin,
-    MetadataEncoding, MetadataScalar, MetadataValue, PacketMeta, PacketTuple, PresentedTimestamp,
-    Reliability, StopReason, TimestampMode, TraceEvent,
+    BpfMapOperation, BpfMapOperationKind, BpfProgramKind, BpfProgramRef, BtfDump, CONTRACT_VERSION,
+    CaptureEnd, CaptureFilters, CaptureLimits, CaptureStart, Describe, Envelope, EventAssociation,
+    FunctionRef, MatchOrigin, MetadataEncoding, MetadataScalar, MetadataValue, PacketMeta,
+    PacketTuple, PresentedTimestamp, Reliability, StopReason, TimestampMode, TraceEvent,
 };
 use skbx_core::{
     BoundedMap, DEFAULT_BTF_PATH, DropReasonTable, SymbolTable, build_probe_plan_with_bpf_helpers,
@@ -101,6 +101,9 @@ enum Command {
         /// Trace direct kernel callees discovered from JIT-compiled BPF programs.
         #[arg(long)]
         filter_track_bpf_helpers: bool,
+        /// Trace every currently loaded BTF-enabled TC classifier.
+        #[arg(long)]
+        filter_trace_tc: bool,
         /// Read target kernel BTF from this path.
         #[arg(long)]
         kernel_btf: Option<PathBuf>,
@@ -339,6 +342,7 @@ fn run(cli: Cli) -> Result<u8> {
             filter_func,
             filter_non_skb_funcs,
             filter_track_bpf_helpers,
+            filter_trace_tc,
             kernel_btf,
             kmods,
             all_kmods,
@@ -373,6 +377,7 @@ fn run(cli: Cli) -> Result<u8> {
             filter_func.as_deref(),
             &filter_non_skb_funcs,
             filter_track_bpf_helpers,
+            filter_trace_tc,
             kernel_btf.as_deref(),
             &kmods,
             all_kmods,
@@ -503,6 +508,7 @@ fn capture(
     filter_func: Option<&str>,
     non_skb_functions: &[String],
     filter_track_bpf_helpers: bool,
+    filter_trace_tc: bool,
     kernel_btf: Option<&Path>,
     modules: &[String],
     all_modules: bool,
@@ -541,6 +547,9 @@ fn capture(
     }
     if route_cache_entries == 0 {
         bail!("capture --route-cache-entries must be greater than zero");
+    }
+    if filter_trace_tc && (output_skb || output_skb_shared_info) {
+        bail!("TC program tracing does not yet support BTF structure dumps");
     }
     if output_max_bytes.is_some() && output_path == Path::new("-") {
         bail!("--output-max-bytes requires a file --output path");
@@ -674,6 +683,7 @@ fn capture(
             .flatten()
             .map(str::to_owned)
             .collect(),
+            bpf_programs: Vec::new(),
             segment: None,
             filters: filters.clone(),
             limits: CaptureLimits {
@@ -760,6 +770,11 @@ fn capture(
             }),
             output_skb_dump: u32::from(output_skb),
             output_shared_info_dump: u32::from(output_skb_shared_info),
+            dynamic_program_id: 0,
+            dynamic_program_kind: 0,
+            _pad0: [0; 3],
+            dynamic_program_name: [0; 16],
+            dynamic_program_entry: [0; 64],
         };
         let mut sensor = skbx_sensor::LiveSensor::attach(
             &attachments,
@@ -771,9 +786,11 @@ fn capture(
                 AttachmentBackend::Kprobe => skbx_sensor::AttachmentMode::Kprobe,
                 AttachmentBackend::KprobeMulti => skbx_sensor::AttachmentMode::KprobeMulti,
             },
+            filter_trace_tc,
         )?;
         start.attachment_backend = sensor.attachment_backend().into();
         start.identity_hooks = sensor.identity_hooks().to_vec();
+        start.bpf_programs = sensor.bpf_programs().to_vec();
         let mut writer = if let Some(max_bytes) = output_max_bytes {
             CaptureWriter::Segmented(Box::new(segmented_output::SegmentedTraceWriter::new(
                 output_path,
@@ -827,15 +844,18 @@ fn capture(
                     stop_reason = StopReason::EventLimit;
                     break;
                 }
-                let (raw, map, metadata, btf_dumps) = observation.into_parts();
+                let (raw, map, metadata, btf_dumps, bpf_program) = observation.into_parts();
                 let stack = sensor.stack_frames(raw.stack_id);
                 let mut event = convert_event(
                     &id,
                     seq,
                     raw,
-                    map,
-                    metadata,
-                    btf_dumps,
+                    RawEventComponents {
+                        map,
+                        metadata,
+                        btf_dumps,
+                        bpf_program,
+                    },
                     EventEnrichment {
                         metadata_projections: &metadata_projections,
                         symbols: &symbols,
@@ -1098,13 +1118,19 @@ struct EventEnrichment<'a> {
     stack: &'a [u64],
 }
 
+#[derive(Default)]
+struct RawEventComponents {
+    map: Option<skbx_sensor::RawMapTraceEvent>,
+    metadata: Option<skbx_sensor::RawMetadata>,
+    btf_dumps: Option<skbx_sensor::RawBtfDumps>,
+    bpf_program: Option<skbx_sensor::RawBpfProgram>,
+}
+
 fn convert_event(
     capture_id: &str,
     seq: u64,
     raw: skbx_sensor::RawTraceEvent,
-    raw_map: Option<skbx_sensor::RawMapTraceEvent>,
-    raw_metadata: Option<skbx_sensor::RawMetadata>,
-    raw_btf_dumps: Option<skbx_sensor::RawBtfDumps>,
+    components: RawEventComponents,
     enrichment: EventEnrichment<'_>,
 ) -> TraceEvent {
     let function_symbol = enrichment
@@ -1166,9 +1192,10 @@ fn convert_event(
             format!("{:#x}", raw.parameter_third),
         ],
         drop_reason,
-        bpf_map: raw_map.map(convert_bpf_map),
-        metadata: convert_metadata(raw_metadata, enrichment.metadata_projections),
-        btf_dumps: convert_btf_dumps(raw_btf_dumps),
+        bpf_map: components.map.map(convert_bpf_map),
+        metadata: convert_metadata(components.metadata, enrichment.metadata_projections),
+        btf_dumps: convert_btf_dumps(components.btf_dumps),
+        bpf_program: components.bpf_program.map(convert_bpf_program),
         packet: PacketMeta {
             len: raw.len,
             protocol: u16::from_be(raw.protocol),
@@ -1182,6 +1209,18 @@ fn convert_event(
         },
         tuple: packet_tuple(&raw.tuple),
         tunnel_tuple: packet_tuple(&raw.tunnel_tuple),
+    }
+}
+
+fn convert_bpf_program(raw: skbx_sensor::RawBpfProgram) -> BpfProgramRef {
+    BpfProgramRef {
+        id: raw.id,
+        name: raw.name_string(),
+        entry: raw.entry_string(),
+        kind: match raw.kind {
+            skbx_sensor::BPF_PROGRAM_XDP => BpfProgramKind::Xdp,
+            _ => BpfProgramKind::Tc,
+        },
     }
 }
 
@@ -1422,11 +1461,7 @@ fn write_event(writer: &mut impl Write, format: OutputFormat, event: &TraceEvent
     match format {
         OutputFormat::Jsonl => write_envelope(writer, &Envelope::Event(event.clone())),
         OutputFormat::Text => {
-            let function = event
-                .function
-                .symbol
-                .as_deref()
-                .unwrap_or(&event.function.address);
+            let function = event_display_name(event);
             let association = match event.association {
                 EventAssociation::Direct => "direct",
                 EventAssociation::Stack => "stack",
@@ -1448,7 +1483,7 @@ fn write_event(writer: &mut impl Write, format: OutputFormat, event: &TraceEvent
                     event.packet.len,
                     association,
                     origin,
-                    function
+                    &function
                 )?;
             } else {
                 writeln!(
@@ -1460,7 +1495,7 @@ fn write_event(writer: &mut impl Write, format: OutputFormat, event: &TraceEvent
                     event.packet.len,
                     association,
                     origin,
-                    function
+                    &function
                 )?;
             }
             for dump in &event.btf_dumps {
@@ -1480,6 +1515,28 @@ fn write_event(writer: &mut impl Write, format: OutputFormat, event: &TraceEvent
             Ok(())
         }
     }
+}
+
+fn event_display_name(event: &TraceEvent) -> String {
+    event.bpf_program.as_ref().map_or_else(
+        || {
+            event
+                .function
+                .symbol
+                .clone()
+                .unwrap_or_else(|| event.function.address.clone())
+        },
+        |program| {
+            let kind = match program.kind {
+                BpfProgramKind::Tc => "tc",
+                BpfProgramKind::Xdp => "xdp",
+            };
+            format!(
+                "bpf:{kind}:{}:{}/{}",
+                program.id, program.name, program.entry
+            )
+        },
+    )
 }
 
 fn write_end(writer: &mut impl Write, format: OutputFormat, end: &CaptureEnd) -> Result<()> {
@@ -1537,6 +1594,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bpf_program_identity_is_exact_in_events_and_text() {
+        let mut name = [0; 16];
+        name[..8].copy_from_slice(b"cls_test");
+        let mut entry = [0; 64];
+        entry[..15].copy_from_slice(b"classify_packet");
+        let event = convert_event(
+            "capture",
+            0,
+            skbx_sensor::RawTraceEvent {
+                skb_addr: 1,
+                ..Default::default()
+            },
+            RawEventComponents {
+                bpf_program: Some(skbx_sensor::RawBpfProgram {
+                    id: 42,
+                    kind: skbx_sensor::BPF_PROGRAM_TC,
+                    name,
+                    entry,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            EventEnrichment {
+                metadata_projections: &[],
+                symbols: &SymbolTable::default(),
+                drop_reasons: &DropReasonTable::default(),
+                stack: &[],
+            },
+        );
+
+        assert_eq!(
+            event.bpf_program,
+            Some(BpfProgramRef {
+                id: 42,
+                name: "cls_test".into(),
+                entry: "classify_packet".into(),
+                kind: BpfProgramKind::Tc,
+            })
+        );
+        assert_eq!(
+            event_display_name(&event),
+            "bpf:tc:42:cls_test/classify_packet"
+        );
+    }
+
+    #[test]
     fn event_conversion_is_stable() {
         let raw = skbx_sensor::RawTraceEvent {
             timestamp_ns: 1,
@@ -1578,9 +1681,7 @@ mod tests {
             "capture",
             0,
             raw,
-            None,
-            None,
-            None,
+            RawEventComponents::default(),
             EventEnrichment {
                 metadata_projections: &[],
                 symbols: &symbols,
@@ -1592,9 +1693,7 @@ mod tests {
             "capture",
             0,
             raw,
-            None,
-            None,
-            None,
+            RawEventComponents::default(),
             EventEnrichment {
                 metadata_projections: &[],
                 symbols: &symbols,
@@ -1625,9 +1724,7 @@ mod tests {
                 association: skbx_sensor::ASSOCIATION_STACK,
                 ..raw
             },
-            None,
-            None,
-            None,
+            RawEventComponents::default(),
             EventEnrichment {
                 metadata_projections: &[],
                 symbols: &symbols,
@@ -1806,9 +1903,7 @@ mod tests {
             "capture",
             0,
             raw,
-            None,
-            None,
-            None,
+            RawEventComponents::default(),
             EventEnrichment {
                 metadata_projections: &[],
                 symbols: &SymbolTable::default(),
