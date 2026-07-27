@@ -189,6 +189,13 @@ impl Describe {
                     description: "decode exact direct callees from current JIT programs, validate them with BTF and retain same-SKB evidence",
                 },
                 Capability {
+                    name: "bpf-map-operation-evidence",
+                    status: supported.clone(),
+                    requires: "BPF helper tracing and map BTF metadata",
+                    cost: "320-byte records only for selected map operations",
+                    description: "emit typed map identity, bounded key and update-value bytes with explicit truncation and read errors",
+                },
+                Capability {
                     name: "skb-drop-reason",
                     status: supported.clone(),
                     requires: "kernel BTF enum and a supported drop function",
@@ -323,6 +330,28 @@ pub struct FunctionRef {
     pub symbol: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BpfMapOperationKind {
+    Lookup,
+    Update,
+    Delete,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BpfMapOperation {
+    pub operation: BpfMapOperationKind,
+    pub map_id: u32,
+    pub map_name: String,
+    pub key_size: u32,
+    pub value_size: u32,
+    pub key: Option<String>,
+    pub value: Option<String>,
+    pub key_truncated: bool,
+    pub value_truncated: bool,
+    pub read_errors: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventAssociation {
@@ -369,6 +398,8 @@ pub struct TraceEvent {
     pub parameters: [String; 2],
     #[serde(default)]
     pub drop_reason: Option<String>,
+    #[serde(default)]
+    pub bpf_map: Option<BpfMapOperation>,
     pub packet: PacketMeta,
     #[serde(default)]
     pub tuple: Option<PacketTuple>,
@@ -608,6 +639,12 @@ pub fn json_schema() -> serde_json::Value {
                         "items": {"type": "string", "pattern": "^0x[0-9a-f]+$"}
                     },
                     "drop_reason": {"type": ["string", "null"]},
+                    "bpf_map": {
+                        "oneOf": [
+                            {"$ref": "#/$defs/BpfMapOperation"},
+                            {"type": "null"}
+                        ]
+                    },
                     "packet": {"$ref": "#/$defs/PacketMeta"},
                     "tuple": {
                         "oneOf": [
@@ -670,6 +707,27 @@ pub fn json_schema() -> serde_json::Value {
                 "properties": {
                     "address": {"type": "string", "pattern": "^0x[0-9a-f]+$"},
                     "symbol": {"type": ["string", "null"]}
+                },
+                "additionalProperties": false
+            },
+            "BpfMapOperation": {
+                "type": "object",
+                "required": ["operation", "map_id", "map_name", "key_size", "value_size", "key", "value", "key_truncated", "value_truncated", "read_errors"],
+                "properties": {
+                    "operation": {"enum": ["lookup", "update", "delete"]},
+                    "map_id": {"type": "integer", "minimum": 0},
+                    "map_name": {"type": "string"},
+                    "key_size": {"type": "integer", "minimum": 0},
+                    "value_size": {"type": "integer", "minimum": 0},
+                    "key": {"type": ["string", "null"], "pattern": "^0x[0-9a-f]*$"},
+                    "value": {"type": ["string", "null"], "pattern": "^0x[0-9a-f]*$"},
+                    "key_truncated": {"type": "boolean"},
+                    "value_truncated": {"type": "boolean"},
+                    "read_errors": {
+                        "type": "array",
+                        "items": {"enum": ["metadata", "key", "value"]},
+                        "uniqueItems": true
+                    }
                 },
                 "additionalProperties": false
             },

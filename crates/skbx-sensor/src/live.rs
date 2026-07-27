@@ -1,4 +1,4 @@
-use crate::{KernelStats, RawTraceEvent};
+use crate::{KernelStats, RawObservation};
 use libbpf_rs::{Link, MapCore, MapFlags, MapHandle, Object, ObjectBuilder, ProgramAttachType};
 use skbx_contract::ProbeSpec;
 use std::collections::{BTreeSet, VecDeque};
@@ -93,7 +93,7 @@ pub enum LiveError {
 
 #[derive(Default)]
 struct RingState {
-    events: VecDeque<RawTraceEvent>,
+    events: VecDeque<RawObservation>,
     decode_failures: u64,
 }
 
@@ -158,10 +158,33 @@ impl LiveSensor {
             .iter()
             .filter_map(|probe| probe.skb_argument)
             .collect();
-        let non_skb_functions: Vec<String> = probes
+        let all_non_skb_functions: Vec<String> = probes
             .iter()
             .filter(|probe| probe.available && probe.skb_argument.is_none())
             .map(|probe| probe.function.clone())
+            .collect();
+        let map_lookup_functions: Vec<String> = all_non_skb_functions
+            .iter()
+            .filter(|function| function.ends_with("_lookup_elem"))
+            .cloned()
+            .collect();
+        let map_update_functions: Vec<String> = all_non_skb_functions
+            .iter()
+            .filter(|function| function.ends_with("_update_elem"))
+            .cloned()
+            .collect();
+        let map_delete_functions: Vec<String> = all_non_skb_functions
+            .iter()
+            .filter(|function| function.ends_with("_delete_elem"))
+            .cloned()
+            .collect();
+        let non_skb_functions: Vec<String> = all_non_skb_functions
+            .into_iter()
+            .filter(|function| {
+                !function.ends_with("_lookup_elem")
+                    && !function.ends_with("_update_elem")
+                    && !function.ends_with("_delete_elem")
+            })
             .collect();
         let available_functions = available_kprobe_functions();
         let identity_targets: Vec<(&str, &str)> = if config.track_skb != 0 {
@@ -202,6 +225,15 @@ impl LiveSensor {
                 || (config.track_stack != 0
                     && !non_skb_functions.is_empty()
                     && name == "skbx_stack_associated")
+                || (config.track_stack != 0
+                    && !map_lookup_functions.is_empty()
+                    && name == "skbx_map_lookup")
+                || (config.track_stack != 0
+                    && !map_update_functions.is_empty()
+                    && name == "skbx_map_update")
+                || (config.track_stack != 0
+                    && !map_delete_functions.is_empty()
+                    && name == "skbx_map_delete")
                 || (name == "skbx_replacement_arg2_entry"
                     && identity_targets
                         .iter()
@@ -213,7 +245,14 @@ impl LiveSensor {
                 || (name == "skbx_replacement_exit" && !identity_targets.is_empty());
             program.set_autoload(active);
             if active
-                && (argument.is_some() || name == "skbx_stack_associated")
+                && (argument.is_some()
+                    || matches!(
+                        name.as_ref(),
+                        "skbx_stack_associated"
+                            | "skbx_map_lookup"
+                            | "skbx_map_update"
+                            | "skbx_map_delete"
+                    ))
                 && mode == AttachmentMode::KprobeMulti
             {
                 program.set_attach_type(ProgramAttachType::KprobeMulti);
@@ -288,6 +327,48 @@ impl LiveSensor {
                     }
                 }
                 AttachmentMode::Auto => unreachable!("resolved before attach_once"),
+            }
+        }
+        if config.track_stack != 0 {
+            for (program_name, functions) in [
+                ("skbx_map_lookup", &map_lookup_functions),
+                ("skbx_map_update", &map_update_functions),
+                ("skbx_map_delete", &map_delete_functions),
+            ] {
+                if functions.is_empty() {
+                    continue;
+                }
+                let program = object
+                    .progs_mut()
+                    .find(|program| program.name() == OsStr::new(program_name))
+                    .ok_or_else(|| {
+                        LiveError::Program(format!("program {program_name} not found"))
+                    })?;
+                match mode {
+                    AttachmentMode::KprobeMulti => {
+                        links.push(
+                            program
+                                .attach_kprobe_multi(false, functions.clone())
+                                .map_err(|error| {
+                                    LiveError::Program(format!(
+                                        "attach {program_name} kprobe-multi group: {error}"
+                                    ))
+                                })?,
+                        );
+                    }
+                    AttachmentMode::Kprobe => {
+                        for function in functions {
+                            links.push(program.attach_kprobe(false, function).map_err(
+                                |error| {
+                                    LiveError::Program(format!(
+                                        "attach {program_name} to {function}: {error}"
+                                    ))
+                                },
+                            )?);
+                        }
+                    }
+                    AttachmentMode::Auto => unreachable!("resolved before attach_once"),
+                }
             }
         }
         if config.track_skb != 0 || config.track_stack != 0 {
@@ -370,7 +451,7 @@ impl LiveSensor {
         })
     }
 
-    pub fn poll(&mut self, timeout: Duration) -> Result<Vec<RawTraceEvent>, LiveError> {
+    pub fn poll(&mut self, timeout: Duration) -> Result<Vec<RawObservation>, LiveError> {
         let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
         // SAFETY: ring is a live libbpf ring manager owned by this sensor.
         let result =
@@ -535,7 +616,7 @@ unsafe extern "C" fn on_ring_sample(
 ) -> i32 {
     let state = unsafe { &mut *context.cast::<RingState>() };
     let bytes = unsafe { slice::from_raw_parts(data.cast::<u8>(), size as usize) };
-    match RawTraceEvent::from_bytes(bytes) {
+    match RawObservation::from_bytes(bytes) {
         Some(event) => state.events.push_back(event),
         None => state.decode_failures = state.decode_failures.saturating_add(1),
     }

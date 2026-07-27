@@ -46,6 +46,13 @@
 #define MATCH_TRACKED_SKB 1
 #define MATCH_STACK_ASSOCIATION 2
 #define MATCH_TRACKED_XDP 3
+#define MAP_OPERATION_LOOKUP 1
+#define MAP_OPERATION_UPDATE 2
+#define MAP_OPERATION_DELETE 3
+#define MAP_READ_METADATA_FAILED (1u << 0)
+#define MAP_READ_KEY_FAILED      (1u << 1)
+#define MAP_READ_VALUE_FAILED    (1u << 2)
+#define MAX_MAP_CAPTURE_BYTES 32
 
 #define ETH_P_IP   0x0800
 #define ETH_P_IPV6 0x86dd
@@ -162,6 +169,20 @@ struct skbx_trace_event {
     __s64 stack_id;
     __u64 parameter_second;
     __u64 parameter_third;
+};
+
+struct skbx_map_trace_event {
+    struct skbx_trace_event event;
+    __u32 map_id;
+    __u32 key_size;
+    __u32 value_size;
+    __u8 operation;
+    __u8 key_captured;
+    __u8 value_captured;
+    __u8 map_read_status;
+    char map_name[16];
+    __u8 key[MAX_MAP_CAPTURE_BYTES];
+    __u8 value[MAX_MAP_CAPTURE_BYTES];
 };
 
 struct kernel_stats {
@@ -841,34 +862,11 @@ static __always_inline void associate_stack(struct pt_regs *ctx,
     bpf_map_update_elem(&skb_stack_anchor, &skb_addr, &anchor, 0);
 }
 
-static __always_inline int trace_skb_associated(struct pt_regs *ctx,
-                                                struct sk_buff *skb,
-                                                __u8 association)
+static __always_inline void fill_trace_event(
+    struct pt_regs *ctx, struct sk_buff *skb, __u8 association, int match,
+    __u64 identity, struct skbx_trace_event *event,
+    struct kernel_stats *counters)
 {
-    struct kernel_stats *counters = stats();
-    int match = MATCH_FILTER;
-    __u64 identity = (__u64)skb;
-    __u64 *tracked_identity;
-
-    if (association == ASSOCIATION_DIRECT) {
-        match = should_trace(skb, counters, &identity);
-        if (!match)
-            return 0;
-    } else if (CONFIG.track_skb && skb) {
-        tracked_identity = bpf_map_lookup_elem(&tracked_skbs, &identity);
-        if (tracked_identity)
-            identity = *tracked_identity;
-    }
-    if (association == ASSOCIATION_DIRECT && CONFIG.track_stack)
-        associate_stack(ctx, skb);
-    struct skbx_trace_event *event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
-
-    if (!event) {
-        if (counters)
-            counters->reserve_failures++;
-        return 0;
-    }
-
     __builtin_memset(event, 0, sizeof(*event));
     event->stack_id = -1;
     event->association = association;
@@ -931,7 +929,38 @@ static __always_inline int trace_skb_associated(struct pt_regs *ctx,
 
     if (event->read_status && counters)
         counters->read_failures++;
+}
 
+static __always_inline int trace_skb_associated(struct pt_regs *ctx,
+                                                struct sk_buff *skb,
+                                                __u8 association)
+{
+    struct kernel_stats *counters = stats();
+    int match = MATCH_FILTER;
+    __u64 identity = (__u64)skb;
+    __u64 *tracked_identity;
+
+    if (association == ASSOCIATION_DIRECT) {
+        match = should_trace(skb, counters, &identity);
+        if (!match)
+            return 0;
+    } else if (CONFIG.track_skb && skb) {
+        tracked_identity = bpf_map_lookup_elem(&tracked_skbs, &identity);
+        if (tracked_identity)
+            identity = *tracked_identity;
+    }
+    if (association == ASSOCIATION_DIRECT && CONFIG.track_stack)
+        associate_stack(ctx, skb);
+    struct skbx_trace_event *event =
+        bpf_ringbuf_reserve(&events, sizeof(*event), 0);
+
+    if (!event) {
+        if (counters)
+            counters->reserve_failures++;
+        return 0;
+    }
+
+    fill_trace_event(ctx, skb, association, match, identity, event, counters);
     bpf_ringbuf_submit(event, 0);
     return 0;
 }
@@ -971,6 +1000,91 @@ int skbx_stack_associated(struct pt_regs *ctx)
         return 0;
     return trace_skb_associated(ctx, (struct sk_buff *)*skb_addr,
                                ASSOCIATION_STACK);
+}
+
+static __always_inline int trace_map_associated(struct pt_regs *ctx,
+                                                __u8 operation)
+{
+    struct kernel_stats *counters = stats();
+    __u64 anchor = get_stack_anchor(ctx);
+    __u64 *skb_addr;
+    __u64 identity;
+    __u64 *tracked_identity;
+    struct bpf_map *map = (struct bpf_map *)PT_REGS_PARM1(ctx);
+    struct skbx_map_trace_event *record;
+    __u32 captured;
+
+    if (!CONFIG.track_stack || !anchor)
+        return 0;
+    skb_addr = bpf_map_lookup_elem(&stack_anchor_skb, &anchor);
+    if (!skb_addr || !*skb_addr)
+        return 0;
+    identity = *skb_addr;
+    if (CONFIG.track_skb) {
+        tracked_identity = bpf_map_lookup_elem(&tracked_skbs, skb_addr);
+        if (tracked_identity)
+            identity = *tracked_identity;
+    }
+
+    record = bpf_ringbuf_reserve(&events, sizeof(*record), 0);
+    if (!record) {
+        if (counters)
+            counters->reserve_failures++;
+        return 0;
+    }
+    __builtin_memset(record, 0, sizeof(*record));
+    fill_trace_event(ctx, (struct sk_buff *)*skb_addr, ASSOCIATION_STACK,
+                     MATCH_FILTER, identity, &record->event, counters);
+    record->operation = operation;
+
+    if (!map ||
+        bpf_core_read(&record->map_id, sizeof(record->map_id), &map->id) ||
+        bpf_core_read(&record->key_size, sizeof(record->key_size),
+                      &map->key_size) ||
+        bpf_core_read(&record->value_size, sizeof(record->value_size),
+                      &map->value_size) ||
+        bpf_core_read(record->map_name, sizeof(record->map_name), &map->name))
+        record->map_read_status |= MAP_READ_METADATA_FAILED;
+
+    captured = record->key_size < MAX_MAP_CAPTURE_BYTES ?
+        record->key_size : MAX_MAP_CAPTURE_BYTES;
+    record->key_captured = captured;
+    if (captured &&
+        bpf_probe_read_kernel(record->key, captured,
+                              (void *)PT_REGS_PARM2(ctx)))
+        record->map_read_status |= MAP_READ_KEY_FAILED;
+
+    if (operation == MAP_OPERATION_UPDATE) {
+        captured = record->value_size < MAX_MAP_CAPTURE_BYTES ?
+            record->value_size : MAX_MAP_CAPTURE_BYTES;
+        record->value_captured = captured;
+        if (captured &&
+            bpf_probe_read_kernel(record->value, captured,
+                                  (void *)PT_REGS_PARM3(ctx)))
+            record->map_read_status |= MAP_READ_VALUE_FAILED;
+    }
+    if (record->map_read_status && counters)
+        counters->read_failures++;
+    bpf_ringbuf_submit(record, 0);
+    return 0;
+}
+
+SEC("kprobe")
+int skbx_map_lookup(struct pt_regs *ctx)
+{
+    return trace_map_associated(ctx, MAP_OPERATION_LOOKUP);
+}
+
+SEC("kprobe")
+int skbx_map_update(struct pt_regs *ctx)
+{
+    return trace_map_associated(ctx, MAP_OPERATION_UPDATE);
+}
+
+SEC("kprobe")
+int skbx_map_delete(struct pt_regs *ctx)
+{
+    return trace_map_associated(ctx, MAP_OPERATION_DELETE);
 }
 
 SEC("kprobe")

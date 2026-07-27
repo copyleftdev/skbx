@@ -2,9 +2,9 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use nix::sched::{CloneFlags, setns};
 use skbx_contract::{
-    CONTRACT_VERSION, CaptureEnd, CaptureFilters, CaptureLimits, CaptureStart, Describe, Envelope,
-    EventAssociation, FunctionRef, MatchOrigin, PacketMeta, PacketTuple, PresentedTimestamp,
-    StopReason, TimestampMode, TraceEvent,
+    BpfMapOperation, BpfMapOperationKind, CONTRACT_VERSION, CaptureEnd, CaptureFilters,
+    CaptureLimits, CaptureStart, Describe, Envelope, EventAssociation, FunctionRef, MatchOrigin,
+    PacketMeta, PacketTuple, PresentedTimestamp, StopReason, TimestampMode, TraceEvent,
 };
 use skbx_core::{
     BoundedMap, DEFAULT_BTF_PATH, DropReasonTable, SymbolTable, build_probe_plan_with_bpf_helpers,
@@ -647,13 +647,14 @@ fn capture(
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             let timeout = remaining.min(Duration::from_millis(100));
-            for raw in sensor.poll(timeout)? {
+            for observation in sensor.poll(timeout)? {
                 if seq >= max_events {
                     stop_reason = StopReason::EventLimit;
                     break;
                 }
+                let (raw, map) = observation.into_parts();
                 let stack = sensor.stack_frames(raw.stack_id);
-                let mut event = convert_event(&id, seq, raw, &symbols, &drop_reasons, &stack);
+                let mut event = convert_event(&id, seq, raw, map, &symbols, &drop_reasons, &stack);
                 event.presentation_timestamp = present_timestamp(
                     timestamp,
                     &event,
@@ -882,6 +883,7 @@ fn convert_event(
     capture_id: &str,
     seq: u64,
     raw: skbx_sensor::RawTraceEvent,
+    raw_map: Option<skbx_sensor::RawMapTraceEvent>,
     symbols: &SymbolTable,
     drop_reasons: &DropReasonTable,
     stack: &[u64],
@@ -941,6 +943,7 @@ fn convert_event(
             format!("{:#x}", raw.parameter_third),
         ],
         drop_reason,
+        bpf_map: raw_map.map(convert_bpf_map),
         packet: PacketMeta {
             len: raw.len,
             protocol: u16::from_be(raw.protocol),
@@ -955,6 +958,52 @@ fn convert_event(
         tuple: packet_tuple(&raw.tuple),
         tunnel_tuple: packet_tuple(&raw.tunnel_tuple),
     }
+}
+
+fn convert_bpf_map(raw: skbx_sensor::RawMapTraceEvent) -> BpfMapOperation {
+    let operation = match raw.operation {
+        skbx_sensor::MAP_OPERATION_UPDATE => BpfMapOperationKind::Update,
+        skbx_sensor::MAP_OPERATION_DELETE => BpfMapOperationKind::Delete,
+        _ => BpfMapOperationKind::Lookup,
+    };
+    let key_len = usize::from(raw.key_captured).min(raw.key.len());
+    let value_len = usize::from(raw.value_captured).min(raw.value.len());
+    let read_errors = [
+        (skbx_sensor::MAP_READ_METADATA_FAILED, "metadata"),
+        (skbx_sensor::MAP_READ_KEY_FAILED, "key"),
+        (skbx_sensor::MAP_READ_VALUE_FAILED, "value"),
+    ]
+    .into_iter()
+    .filter(|(mask, _)| raw.read_status & mask != 0)
+    .map(|(_, name)| name.to_owned())
+    .collect();
+    BpfMapOperation {
+        operation,
+        map_id: raw.map_id,
+        map_name: raw.map_name_string(),
+        key_size: raw.key_size,
+        value_size: raw.value_size,
+        key: (raw.read_status & skbx_sensor::MAP_READ_KEY_FAILED == 0)
+            .then(|| hex_bytes(&raw.key[..key_len])),
+        value: (raw.operation == skbx_sensor::MAP_OPERATION_UPDATE
+            && raw.read_status & skbx_sensor::MAP_READ_VALUE_FAILED == 0)
+            .then(|| hex_bytes(&raw.value[..value_len])),
+        key_truncated: raw.key_size > u32::from(raw.key_captured),
+        value_truncated: raw.operation == skbx_sensor::MAP_OPERATION_UPDATE
+            && raw.value_size > u32::from(raw.value_captured),
+        read_errors,
+    }
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(2 + bytes.len() * 2);
+    output.push_str("0x");
+    for byte in bytes {
+        output.push(HEX[usize::from(byte >> 4)] as char);
+        output.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    output
 }
 
 fn drop_reason_parameter(function: &str, raw: &skbx_sensor::RawTraceEvent) -> Option<u64> {
@@ -1161,8 +1210,8 @@ mod tests {
         };
         let symbols = SymbolTable::parse("0000000000001000 T ip_rcv\n");
         let drop_reasons = DropReasonTable::default();
-        let a = convert_event("capture", 0, raw, &symbols, &drop_reasons, &[0x1010]);
-        let b = convert_event("capture", 0, raw, &symbols, &drop_reasons, &[0x1010]);
+        let a = convert_event("capture", 0, raw, None, &symbols, &drop_reasons, &[0x1010]);
+        let b = convert_event("capture", 0, raw, None, &symbols, &drop_reasons, &[0x1010]);
         assert_eq!(a, b);
         assert_eq!(a.function.symbol.as_deref(), Some("ip_rcv"));
         assert_eq!(a.caller.as_ref().unwrap().symbol.as_deref(), Some("ip_rcv"));
@@ -1186,11 +1235,41 @@ mod tests {
                 association: skbx_sensor::ASSOCIATION_STACK,
                 ..raw
             },
+            None,
             &symbols,
             &drop_reasons,
             &[],
         );
         assert_eq!(associated.association, EventAssociation::Stack);
+    }
+
+    #[test]
+    fn map_operation_conversion_preserves_bounds_and_read_failures() {
+        let mut raw = skbx_sensor::RawMapTraceEvent {
+            operation: skbx_sensor::MAP_OPERATION_UPDATE,
+            map_id: 7,
+            key_size: 40,
+            value_size: 8,
+            key_captured: skbx_sensor::MAX_MAP_CAPTURE_BYTES as u8,
+            value_captured: 8,
+            read_status: skbx_sensor::MAP_READ_VALUE_FAILED,
+            key: [0xab; skbx_sensor::MAX_MAP_CAPTURE_BYTES],
+            ..Default::default()
+        };
+        raw.map_name[..3].copy_from_slice(b"map");
+
+        let operation = convert_bpf_map(raw);
+        assert_eq!(operation.operation, BpfMapOperationKind::Update);
+        assert_eq!(operation.map_id, 7);
+        assert_eq!(operation.map_name, "map");
+        assert_eq!(
+            operation.key.as_deref(),
+            Some("0xabababababababababababababababababababababababababababababababab")
+        );
+        assert_eq!(operation.value, None);
+        assert!(operation.key_truncated);
+        assert!(!operation.value_truncated);
+        assert_eq!(operation.read_errors, ["value"]);
     }
 
     #[test]
@@ -1252,6 +1331,7 @@ mod tests {
             "capture",
             0,
             raw,
+            None,
             &SymbolTable::default(),
             &DropReasonTable::default(),
             &[],

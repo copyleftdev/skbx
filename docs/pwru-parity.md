@@ -37,7 +37,7 @@ coverage and a relevant live-kernel check exist.
 | Caller | supported | Return address capture and deterministic kallsyms enrichment |
 | Kernel stack | supported | Optional 50-frame stack map with explicit enrichment-failure telemetry |
 | SKB drop reason | supported | BTF enum decoding for both `kfree_skb_reason` and the older `sk_skb_reason_drop` signature; live checked with named reasons |
-| BPF map operation arguments | missing | Dedicated entry/return probes and typed evidence records |
+| BPF map operation arguments | supported | JIT-discovered lookup/update/delete implementations use operation-specific probes and 320-byte extended records while ordinary events remain 224 bytes; map ID/name/sizes plus at most 32 bytes each of key/value, explicit truncation/read telemetry, isolated TC hash-map live gate |
 | Timestamp modes | supported | `none`, raw-monotonic `current`, per-SKB `relative` and RFC 3339 `absolute`; JSON always retains raw monotonic evidence |
 | Text output | partial | Stable text exists but does not mimic every pwru column |
 | JSON output | supported | Versioned append-only `traceq` JSONL |

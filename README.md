@@ -39,6 +39,8 @@ split BTF. It records:
 - BTF-validated non-SKB functions associated through bounded frame-pointer
   anchors, including exact callees decoded from JIT-compiled BPF programs,
   with every event labeled `direct` or `stack`;
+- typed lookup/update/delete map-operation evidence with map identity and
+  explicitly bounded key/update-value bytes;
 - caller, network namespace, MTU and the SKB control buffer;
 - BTF-decoded SKB drop reasons on supported drop functions;
 - kernel ring-buffer reserve failures.
@@ -52,7 +54,8 @@ resolved in the namespace selected by `--filter-netns`, and device-less
 output SKBs fall back to their socket namespace.
 
 It does **not yet** claim full `pwru` parity. Packet-byte/BTF dumps, TC/XDP
-program tracing and BPF map argument tracing remain explicit gaps.
+program tracing, arbitrary SKB expressions and rolling output remain explicit
+gaps.
 
 ## Commands
 

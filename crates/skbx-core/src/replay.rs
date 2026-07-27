@@ -500,6 +500,7 @@ mod tests {
             stack: Vec::new(),
             parameters: Default::default(),
             drop_reason: None,
+            bpf_map: None,
             packet: PacketMeta {
                 len: 64,
                 protocol: 0x800,
@@ -659,6 +660,7 @@ mod tests {
                 stack: Vec::new(),
                 parameters: Default::default(),
                 drop_reason: None,
+                bpf_map: None,
                 packet: PacketMeta {
                     len: 64,
                     protocol: 0x0800,

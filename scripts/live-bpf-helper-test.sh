@@ -87,9 +87,26 @@ jq -s -e '
         and $direct.association == "direct"
         and $helper.association == "stack"
         and ($helper.function.symbol | endswith("map_lookup_elem"))
+        and $helper.bpf_map.operation == "lookup"
+        and $helper.bpf_map.map_name == "packet_counts"
+        and $helper.bpf_map.key_size == 4
+        and $helper.bpf_map.value_size == 8
+        and ($helper.bpf_map.key | startswith("0x"))
+        and ($helper.bpf_map.read_errors | length) == 0
         and $direct.skb == $helper.skb
         and ($direct.packet.read_errors | length) == 0
         and ($helper.packet.read_errors | length) == 0
+    )
+' "${TRACE}" >/dev/null
+jq -e '
+    select(
+        .kind == "event" and
+        .bpf_map.operation == "update" and
+        .bpf_map.map_name == "packet_counts" and
+        .bpf_map.key_truncated == false and
+        .bpf_map.value_truncated == false and
+        (.bpf_map.value | startswith("0x")) and
+        (.bpf_map.read_errors | length) == 0
     )
 ' "${TRACE}" >/dev/null
 jq -e '
@@ -98,6 +115,7 @@ jq -e '
         .complete == true and
         .events > 0 and
         .reliability.kernel_reserve_failures == 0 and
+        .reliability.kernel_read_failures == 0 and
         .reliability.userspace_decode_failures == 0
     )
 ' "${TRACE}" >/dev/null

@@ -17,6 +17,13 @@ pub const MATCH_FILTER: u8 = 0;
 pub const MATCH_TRACKED_SKB: u8 = 1;
 pub const MATCH_STACK_ASSOCIATION: u8 = 2;
 pub const MATCH_TRACKED_XDP: u8 = 3;
+pub const MAP_OPERATION_LOOKUP: u8 = 1;
+pub const MAP_OPERATION_UPDATE: u8 = 2;
+pub const MAP_OPERATION_DELETE: u8 = 3;
+pub const MAP_READ_METADATA_FAILED: u8 = 1 << 0;
+pub const MAP_READ_KEY_FAILED: u8 = 1 << 1;
+pub const MAP_READ_VALUE_FAILED: u8 = 1 << 2;
+pub const MAX_MAP_CAPTURE_BYTES: usize = 32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -113,6 +120,77 @@ impl RawTraceEvent {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RawMapTraceEvent {
+    pub event: RawTraceEvent,
+    pub map_id: u32,
+    pub key_size: u32,
+    pub value_size: u32,
+    pub operation: u8,
+    pub key_captured: u8,
+    pub value_captured: u8,
+    pub read_status: u8,
+    pub map_name: [u8; 16],
+    pub key: [u8; MAX_MAP_CAPTURE_BYTES],
+    pub value: [u8; MAX_MAP_CAPTURE_BYTES],
+}
+
+impl RawMapTraceEvent {
+    pub const BYTE_LEN: usize = std::mem::size_of::<Self>();
+
+    fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != Self::BYTE_LEN {
+            return None;
+        }
+        let mut event = Self::default();
+        // SAFETY: destination is initialized and byte-addressable, lengths
+        // match, and the ring sample cannot overlap this stack value.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                (&mut event as *mut Self).cast::<u8>(),
+                Self::BYTE_LEN,
+            );
+        }
+        Some(event)
+    }
+
+    pub fn map_name_string(&self) -> String {
+        let end = self
+            .map_name
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(self.map_name.len());
+        String::from_utf8_lossy(&self.map_name[..end]).into_owned()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RawObservation {
+    Trace(RawTraceEvent),
+    Map(RawMapTraceEvent),
+}
+
+impl RawObservation {
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() == RawTraceEvent::BYTE_LEN {
+            RawTraceEvent::from_bytes(bytes).map(Self::Trace)
+        } else if bytes.len() == RawMapTraceEvent::BYTE_LEN {
+            RawMapTraceEvent::from_bytes(bytes).map(Self::Map)
+        } else {
+            None
+        }
+    }
+
+    pub fn into_parts(self) -> (RawTraceEvent, Option<RawMapTraceEvent>) {
+        match self {
+            Self::Trace(event) => (event, None),
+            Self::Map(map) => (map.event, Some(map)),
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct KernelStats {
     pub reserve_failures: u64,
     pub read_failures: u64,
@@ -146,6 +224,20 @@ mod tests {
     fn rejects_wrong_record_size() {
         assert!(RawTraceEvent::from_bytes(&[0; 223]).is_none());
         assert!(RawTraceEvent::from_bytes(&[0; 224]).is_some());
+    }
+
+    #[test]
+    fn decodes_base_and_extended_map_records_by_size() {
+        assert_eq!(RawMapTraceEvent::BYTE_LEN, 320);
+        assert!(matches!(
+            RawObservation::from_bytes(&[0; 224]),
+            Some(RawObservation::Trace(_))
+        ));
+        assert!(matches!(
+            RawObservation::from_bytes(&[0; 320]),
+            Some(RawObservation::Map(_))
+        ));
+        assert!(RawObservation::from_bytes(&[0; 319]).is_none());
     }
 
     #[test]
