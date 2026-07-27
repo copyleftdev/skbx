@@ -28,9 +28,9 @@
   <link rel="icon" href="../assets/skbx-flight-mark.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Recursive:slnt,wght@-15..0,300..1000&amp;display=swap">
-  <link href="https://fonts.googleapis.com/css2?family=Recursive:slnt,wght@-15..0,300..1000&amp;display=swap" rel="stylesheet" media="print" onload="this.media='all'">
-  <noscript><link href="https://fonts.googleapis.com/css2?family=Recursive:slnt,wght@-15..0,300..1000&amp;display=swap" rel="stylesheet"></noscript>
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Recursive:slnt,wght@-15..0,300..1000&amp;family=Source+Serif+4:opsz,wght@8..60,300..900&amp;display=swap">
+  <link href="https://fonts.googleapis.com/css2?family=Recursive:slnt,wght@-15..0,300..1000&amp;family=Source+Serif+4:opsz,wght@8..60,300..900&amp;display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+  <noscript><link href="https://fonts.googleapis.com/css2?family=Recursive:slnt,wght@-15..0,300..1000&amp;family=Source+Serif+4:opsz,wght@8..60,300..900&amp;display=swap" rel="stylesheet"></noscript>
   <link rel="stylesheet" href="../styles.css">
   <script src="../site.js" defer></script>
   <script type="application/ld+json">
@@ -69,6 +69,7 @@
 </head>
 <body class="guide-page">
   <a class="skip-link" href="#guide-main">Skip to the field guide</a>
+  <div class="reading-progress" aria-hidden="true"><span data-reading-progress></span></div>
 
   <header class="site-header guide-header" data-header>
     <a class="brand" href="../">
@@ -77,8 +78,8 @@
       <span class="brand-state">field guide / 01</span>
     </a>
     <nav aria-label="Guide navigation">
-      <a href="#workflow">Workflow</a>
-      <a href="#reliability">Reliability</a>
+      <a href="../">Overview</a>
+      <a href="#install">Start tracing</a>
       <a class="nav-github" href="https://github.com/copyleftdev/skbx">GitHub <span aria-hidden="true">↗</span></a>
     </nav>
   </header>
@@ -86,43 +87,70 @@
   <main id="guide-main">
     <article class="guide">
       <header class="guide-hero">
-        <div class="guide-breadcrumb">
-          <a href="../">skbx</a>
-          <span aria-hidden="true">/</span>
-          <span>field guide 01</span>
+        <div class="guide-hero-copy">
+          <div class="guide-breadcrumb">
+            <a href="../">skbx</a>
+            <span aria-hidden="true">/</span>
+            <span>field guide 01</span>
+          </div>
+          <p class="section-kicker">Linux packet-drop debugging</p>
+          <h1>Find where the packet disappeared. <em>Keep the evidence.</em></h1>
+          <p class="guide-deck">
+            A bounded workflow for tracing an SKB through Linux kernel
+            functions, TC, XDP, tunnels, transforms, and drops—then replaying
+            the route without root.
+          </p>
+          <div class="guide-hero-actions">
+            <a class="primary-link" href="#install">Start at the host <span aria-hidden="true">↓</span></a>
+            <a class="text-link" href="#workflow">Read the evidence contract</a>
+          </div>
         </div>
-        <p class="section-kicker">Linux packet-drop debugging</p>
-        <h1>Find where the packet disappeared. Keep the evidence.</h1>
-        <p class="guide-deck">
-          A bounded workflow for tracing an SKB through Linux kernel functions,
-          TC, XDP, tunnels, transforms, and drops—then replaying the route
-          without root.
-        </p>
-        <dl class="guide-facts">
-          <div><dt>Tool</dt><dd>skbx 0.1.0</dd></div>
-          <div><dt>Platform</dt><dd>Linux / x86_64 or arm64</dd></div>
-          <div><dt>Capture</dt><dd>root or BPF/perf capabilities</dd></div>
-          <div><dt>Replay</dt><dd>rootless</dd></div>
-        </dl>
-        <p class="guide-reviewed">Reviewed 2026-07-27 against <code>traceq/0.1.0</code>.</p>
+        <aside class="guide-brief" aria-label="Field guide briefing">
+          <div class="guide-trace" aria-hidden="true">
+            <div class="guide-trace-head">
+              <span>INCIDENT ROUTE</span>
+              <span class="recording"><i></i> EVIDENCE</span>
+            </div>
+            <ol>
+              <li><span>01</span><strong>doctor</strong><em>host facts</em></li>
+              <li><span>02</span><strong>plan</strong><em>probe graph</em></li>
+              <li><span>03</span><strong>capture</strong><em>event:8c6f…</em></li>
+              <li><span>04</span><strong>replay</strong><em>route:21b4…</em></li>
+              <li class="is-verdict"><span>05</span><strong>explain</strong><em>DROP_POLICY</em></li>
+            </ol>
+          </div>
+          <dl class="guide-facts">
+            <div><dt>Tool</dt><dd>skbx 0.1.0</dd></div>
+            <div><dt>Platform</dt><dd>Linux / x86_64 or arm64</dd></div>
+            <div><dt>Live capture</dt><dd>root or BPF/perf capabilities</dd></div>
+            <div><dt>Replay</dt><dd>rootless</dd></div>
+          </dl>
+          <p class="guide-reviewed">Reviewed 2026-07-27 · <code>traceq/0.1.0</code></p>
+        </aside>
       </header>
 
       <div class="guide-layout">
-        <aside class="guide-toc" aria-label="On this page">
-          <p>Flight plan</p>
+        <nav class="guide-toc" aria-label="Field guide sections">
+          <div class="guide-toc-head">
+            <p>Flight plan</p>
+            <span data-guide-count>00 / 08</span>
+          </div>
           <ol>
-            <li><a href="#install">Install</a></li>
-            <li><a href="#diagnose">Diagnose the host</a></li>
-            <li><a href="#plan">Plan attachments</a></li>
-            <li><a href="#capture">Capture a bounded trace</a></li>
-            <li><a href="#reliability">Verify completeness</a></li>
-            <li><a href="#replay">Replay and explain</a></li>
-            <li><a href="#interpret">Interpret the path</a></li>
+            <li><a href="#workflow" data-guide-link><span>00</span> Evidence lifecycle</a></li>
+            <li><a href="#install" data-guide-link><span>01</span> Install</a></li>
+            <li><a href="#diagnose" data-guide-link><span>02</span> Diagnose the host</a></li>
+            <li><a href="#plan" data-guide-link><span>03</span> Plan attachments</a></li>
+            <li><a href="#capture" data-guide-link><span>04</span> Capture a trace</a></li>
+            <li><a href="#reliability" data-guide-link><span>05</span> Verify completeness</a></li>
+            <li><a href="#replay" data-guide-link><span>06</span> Replay and explain</a></li>
+            <li><a href="#interpret" data-guide-link><span>07</span> Interpret the path</a></li>
+            <li><a href="#next" data-guide-link><span>08</span> Continue</a></li>
           </ol>
-        </aside>
+          <p class="guide-toc-current" data-guide-current>Evidence lifecycle</p>
+        </nav>
 
         <div class="guide-content">
-          <section id="workflow" aria-labelledby="workflow-title">
+          <section id="workflow" aria-labelledby="workflow-title" data-guide-section>
             <p class="section-kicker">The evidence lifecycle</p>
             <h2 id="workflow-title">Capture first. Explain second.</h2>
             <p>
@@ -138,7 +166,7 @@
             </div>
           </section>
 
-          <section id="install" aria-labelledby="install-guide-title">
+          <section id="install" aria-labelledby="install-guide-title" data-guide-section>
             <span class="guide-step">01 / INSTALL</span>
             <h2 id="install-guide-title">Install the pinned source graph.</h2>
             <p>
@@ -146,13 +174,16 @@
               <code>bpftool</code>, libelf and libpcap development packages,
               and a kernel exposing <code>/sys/kernel/btf/vmlinux</code>.
             </p>
-            <div class="guide-command">
+            <div class="guide-code-block">
+              <div class="guide-code-toolbar">
+                <span>shell / install</span>
+                <button type="button" data-copy="cargo install --git https://github.com/copyleftdev/skbx --locked skbx-cli" data-copy-success="Install command copied." aria-label="Copy Cargo install command">Copy</button>
+              </div>
               <pre><code>cargo install --git https://github.com/copyleftdev/skbx --locked skbx-cli</code></pre>
-              <button type="button" data-copy="cargo install --git https://github.com/copyleftdev/skbx --locked skbx-cli" aria-label="Copy cargo install command">Copy</button>
             </div>
           </section>
 
-          <section id="diagnose" aria-labelledby="diagnose-title">
+          <section id="diagnose" aria-labelledby="diagnose-title" data-guide-section>
             <span class="guide-step">02 / DIAGNOSE</span>
             <h2 id="diagnose-title">Ask the host what is possible.</h2>
             <p>
@@ -161,10 +192,16 @@
               machine-readable evidence. Fix failed prerequisites before
               interpreting a missing packet as a networking result.
             </p>
-            <pre class="guide-code"><code>skbx doctor --json</code></pre>
+            <div class="guide-code-block">
+              <div class="guide-code-toolbar">
+                <span>shell / host readiness</span>
+                <button type="button" data-copy="skbx doctor --json" data-copy-success="Doctor command copied." aria-label="Copy doctor command">Copy</button>
+              </div>
+              <pre><code>skbx doctor --json</code></pre>
+            </div>
           </section>
 
-          <section id="plan" aria-labelledby="plan-title">
+          <section id="plan" aria-labelledby="plan-title" data-guide-section>
             <span class="guide-step">03 / PLAN</span>
             <h2 id="plan-title">Resolve probes before attachment.</h2>
             <p>
@@ -173,10 +210,16 @@
               <code>ip_rcv</code> for IPv4 receive—and inspect the exact
               attachment decision before loading eBPF.
             </p>
-            <pre class="guide-code"><code>skbx plan --probe ip_rcv --json</code></pre>
+            <div class="guide-code-block">
+              <div class="guide-code-toolbar">
+                <span>shell / attachment plan</span>
+                <button type="button" data-copy="skbx plan --probe ip_rcv --json" data-copy-success="Plan command copied." aria-label="Copy attachment plan command">Copy</button>
+              </div>
+              <pre><code>skbx plan --probe ip_rcv --json</code></pre>
+            </div>
           </section>
 
-          <section id="capture" aria-labelledby="capture-title">
+          <section id="capture" aria-labelledby="capture-title" data-guide-section>
             <span class="guide-step">04 / CAPTURE</span>
             <h2 id="capture-title">Bound the observation window.</h2>
             <p>
@@ -184,10 +227,16 @@
               JSONL. The duration, parser state, output path, and reliability
               counters are part of the evidence contract.
             </p>
-            <pre class="guide-code"><code>sudo skbx capture --probe ip_rcv \
+            <div class="guide-code-block">
+              <div class="guide-code-toolbar">
+                <span>shell / bounded capture</span>
+                <button type="button" data-copy="sudo skbx capture --probe ip_rcv --duration 10 --output trace.jsonl icmp" data-copy-success="Capture command copied." aria-label="Copy bounded capture command">Copy</button>
+              </div>
+              <pre><code>sudo skbx capture --probe ip_rcv \
   --duration 10 \
   --output trace.jsonl \
   icmp</code></pre>
+            </div>
             <p>
               Replace <code>icmp</code> with a narrow libpcap expression for
               the incident traffic. Use <code>--filter-track-skb</code> when
@@ -196,7 +245,7 @@
             </p>
           </section>
 
-          <section id="reliability" aria-labelledby="reliability-guide-title">
+          <section id="reliability" aria-labelledby="reliability-guide-title" data-guide-section>
             <span class="guide-step">05 / VERIFY</span>
             <h2 id="reliability-guide-title">Read the footer before the story.</h2>
             <p>
@@ -205,14 +254,23 @@
               non-zero reserve, recursion, read, decode, enrichment, or output
               failures—as an incomplete observation.
             </p>
-            <pre class="guide-code"><code>tail -n 1 trace.jsonl | jq .</code></pre>
+            <div class="guide-code-block">
+              <div class="guide-code-toolbar">
+                <span>shell / reliability footer</span>
+                <button type="button" data-copy="tail -n 1 trace.jsonl | jq ." data-copy-success="Footer command copied." aria-label="Copy reliability footer command">Copy</button>
+              </div>
+              <pre><code>tail -n 1 trace.jsonl | jq .</code></pre>
+            </div>
             <aside class="guide-callout" aria-labelledby="evidence-rule-title">
-              <strong id="evidence-rule-title">Evidence rule</strong>
-              <p>“No drop observed” is only meaningful inside a known capture window with known loss telemetry.</p>
+              <span class="guide-callout-mark" aria-hidden="true">!</span>
+              <div>
+                <strong id="evidence-rule-title">Evidence rule</strong>
+                <p>“No drop observed” is only meaningful inside a known capture window with known loss telemetry.</p>
+              </div>
             </aside>
           </section>
 
-          <section id="replay" aria-labelledby="replay-title">
+          <section id="replay" aria-labelledby="replay-title" data-guide-section>
             <span class="guide-step">06 / REPLAY</span>
             <h2 id="replay-title">Rebuild routes without privilege.</h2>
             <p>
@@ -220,15 +278,27 @@
               by packet identity, reports consensus and outliers, and emits a
               stable <code>route:</code> handle.
             </p>
-            <pre class="guide-code"><code>skbx replay trace.jsonl --format json</code></pre>
+            <div class="guide-code-block">
+              <div class="guide-code-toolbar">
+                <span>shell / deterministic replay</span>
+                <button type="button" data-copy="skbx replay trace.jsonl --format json" data-copy-success="Replay command copied." aria-label="Copy replay command">Copy</button>
+              </div>
+              <pre><code>skbx replay trace.jsonl --format json</code></pre>
+            </div>
             <p>
               Select any <code>event:</code> handle from the capture to retrieve
               its event plus nearby evidence sharing the same packet identity:
             </p>
-            <pre class="guide-code"><code>skbx explain trace.jsonl event:&lt;handle&gt;</code></pre>
+            <div class="guide-code-block">
+              <div class="guide-code-toolbar">
+                <span>shell / evidence lookup</span>
+                <button type="button" data-copy="skbx explain trace.jsonl event:&lt;handle&gt;" data-copy-success="Explain command copied." aria-label="Copy evidence lookup command">Copy</button>
+              </div>
+              <pre><code>skbx explain trace.jsonl event:&lt;handle&gt;</code></pre>
+            </div>
           </section>
 
-          <section id="interpret" aria-labelledby="interpret-title">
+          <section id="interpret" aria-labelledby="interpret-title" data-guide-section>
             <span class="guide-step">07 / INTERPRET</span>
             <h2 id="interpret-title">Turn boundaries into questions.</h2>
             <div class="guide-questions">
@@ -251,7 +321,7 @@
             </div>
           </section>
 
-          <section aria-labelledby="next-title">
+          <section id="next" aria-labelledby="next-title" data-guide-section>
             <p class="section-kicker">Continue the investigation</p>
             <h2 id="next-title">Inspect the evidence model.</h2>
             <p>
@@ -270,6 +340,8 @@
       </div>
     </article>
   </main>
+
+  <p id="copy-status" class="guide-copy-status" role="status" aria-live="polite"></p>
 
   <footer class="site-footer">
     <a class="brand footer-brand" href="../">
