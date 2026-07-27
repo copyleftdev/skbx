@@ -121,7 +121,10 @@ classifier and proves automatic JIT-callee discovery with ordered
 `tcf_classify` → map-helper evidence. `sudo
 scripts/live-skb-replacement-test.sh target/debug/skbx` forces clone and veth
 XDP copy-on-write transitions, then proves that three observed SKB addresses
-retain one canonical identity through replay and `explain`.
+retain one canonical identity through replay and `explain`. `sudo
+scripts/live-xdp-lineage-test.sh target/debug/skbx` proves that identity also
+survives XDP_TX frame transport into a newly allocated SKB, labeled
+`tracked_xdp`.
 
 ## Architecture
 

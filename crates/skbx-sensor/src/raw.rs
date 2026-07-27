@@ -16,6 +16,7 @@ pub const ASSOCIATION_STACK: u8 = 1;
 pub const MATCH_FILTER: u8 = 0;
 pub const MATCH_TRACKED_SKB: u8 = 1;
 pub const MATCH_STACK_ASSOCIATION: u8 = 2;
+pub const MATCH_TRACKED_XDP: u8 = 3;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

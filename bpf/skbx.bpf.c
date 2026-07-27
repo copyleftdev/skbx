@@ -45,6 +45,7 @@
 #define MATCH_FILTER 0
 #define MATCH_TRACKED_SKB 1
 #define MATCH_STACK_ASSOCIATION 2
+#define MATCH_TRACKED_XDP 3
 
 #define ETH_P_IP   0x0800
 #define ETH_P_IPV6 0x86dd
@@ -218,6 +219,13 @@ struct {
     __type(key, __u32);
     __type(value, __u64);
 } lineage_sequence SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65536);
+    __type(key, __u64);
+    __type(value, __u64);
+} skb_data_lineages SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -717,16 +725,53 @@ filtered:
     return 0;
 }
 
+static __always_inline void associate_skb_data(struct sk_buff *skb,
+                                               __u64 identity)
+{
+    unsigned char *head = 0;
+    __u64 key;
+
+    if (!skb || !identity ||
+        bpf_core_read(&head, sizeof(head), &skb->head) || !head)
+        return;
+    key = (__u64)head;
+    bpf_map_update_elem(&skb_data_lineages, &key, &identity, 0);
+}
+
 static __always_inline int should_trace(struct sk_buff *skb,
                                         struct kernel_stats *counters,
                                         __u64 *identity)
 {
-    int matched = configured_filter_match(skb);
+    int matched;
     __u64 key = (__u64)skb;
     __u64 *tracked;
 
     *identity = key;
 
+    if (CONFIG.track_skb && skb) {
+        unsigned char *head = 0;
+        __u64 head_key;
+        __u64 *data_identity;
+
+        tracked = bpf_map_lookup_elem(&tracked_skbs, &key);
+        if (!tracked &&
+            !bpf_core_read(&head, sizeof(head), &skb->head) && head) {
+            head_key = (__u64)head;
+            data_identity =
+                bpf_map_lookup_elem(&skb_data_lineages, &head_key);
+            if (data_identity) {
+                __u64 value = *data_identity;
+
+                *identity = value;
+                bpf_map_update_elem(&tracked_skbs, &key, &value, 0);
+                bpf_map_delete_elem(&skb_data_lineages, &head_key);
+                associate_skb_data(skb, value);
+                return 3;
+            }
+        }
+    }
+
+    matched = configured_filter_match(skb);
     if (matched < 0) {
         if (counters)
             counters->read_failures++;
@@ -736,9 +781,10 @@ static __always_inline int should_trace(struct sk_buff *skb,
     if (CONFIG.track_skb && skb) {
         tracked = bpf_map_lookup_elem(&tracked_skbs, &key);
         if (matched) {
-            if (tracked)
+            if (tracked) {
                 *identity = *tracked;
-            else {
+                associate_skb_data(skb, *identity);
+            } else {
                 __u32 zero = 0;
                 __u64 *sequence =
                     bpf_map_lookup_elem(&lineage_sequence, &zero);
@@ -747,9 +793,11 @@ static __always_inline int should_trace(struct sk_buff *skb,
 
                 *identity = next;
                 bpf_map_update_elem(&tracked_skbs, &key, &next, 0);
+                associate_skb_data(skb, next);
             }
         } else if (tracked) {
             *identity = *tracked;
+            associate_skb_data(skb, *identity);
             return 2;
         }
     }
@@ -826,7 +874,8 @@ static __always_inline int trace_skb_associated(struct pt_regs *ctx,
     event->association = association;
     event->match_origin = association == ASSOCIATION_STACK ?
         MATCH_STACK_ASSOCIATION :
-        (match == 2 ? MATCH_TRACKED_SKB : MATCH_FILTER);
+        (match == 3 ? MATCH_TRACKED_XDP :
+         (match == 2 ? MATCH_TRACKED_SKB : MATCH_FILTER));
     event->timestamp_ns = bpf_ktime_get_ns();
     event->skb_addr = (__u64)skb;
     event->identity = identity;
@@ -975,6 +1024,7 @@ int skbx_clone_exit(struct pt_regs *ctx)
     if (cloned) {
         __u64 value = *identity;
         bpf_map_update_elem(&tracked_skbs, &cloned, &value, 0);
+        associate_skb_data((struct sk_buff *)cloned, value);
     }
     bpf_map_delete_elem(&pending_clones, &pid_tgid);
     return 0;
@@ -1026,8 +1076,10 @@ int skbx_replacement_exit(struct pt_regs *ctx)
         return 0;
     if (!bpf_probe_read_kernel(&replacement, sizeof(replacement),
                                (void *)pending->slot) &&
-        replacement)
+        replacement) {
         bpf_map_update_elem(&tracked_skbs, &replacement, &pending->identity, 0);
+        associate_skb_data((struct sk_buff *)replacement, pending->identity);
+    }
     bpf_map_delete_elem(&pending_skb_replacements, &pid_tgid);
     return 0;
 }

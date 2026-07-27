@@ -459,7 +459,8 @@ fn configure_maps(
         )
     };
     let mut configured = false;
-    let mut resized = false;
+    let mut tracked_resized = false;
+    let mut data_resized = false;
     for mut map in object.maps_mut() {
         let name = map.name().to_string_lossy();
         if name.ends_with(".rodata") {
@@ -478,14 +479,21 @@ fn configure_maps(
         } else if name == "tracked_skbs" {
             map.set_max_entries(route_cache_entries)
                 .map_err(|error| LiveError::Map(error.to_string()))?;
-            resized = true;
+            tracked_resized = true;
+        } else if name == "skb_data_lineages" {
+            map.set_max_entries(route_cache_entries)
+                .map_err(|error| LiveError::Map(error.to_string()))?;
+            data_resized = true;
         }
     }
     if !configured {
         return Err(LiveError::Map("CONFIG rodata map not found".into()));
     }
-    if !resized {
+    if !tracked_resized {
         return Err(LiveError::Map("tracked_skbs map not found".into()));
+    }
+    if !data_resized {
+        return Err(LiveError::Map("skb_data_lineages map not found".into()));
     }
     Ok(())
 }

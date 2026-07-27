@@ -1,4 +1,4 @@
-.PHONY: check build benchmark live-tunnel live-netns live-stack live-stack-lifetime live-bpf-helper live-skb-replacement
+.PHONY: check build benchmark live-tunnel live-netns live-stack live-stack-lifetime live-bpf-helper live-skb-replacement live-xdp-lineage
 
 check:
 	cargo fmt --all -- --check
@@ -34,3 +34,7 @@ live-bpf-helper:
 live-skb-replacement:
 	cargo build --locked --offline
 	sudo ./scripts/live-skb-replacement-test.sh target/debug/skbx
+
+live-xdp-lineage:
+	cargo build --locked --offline
+	sudo ./scripts/live-xdp-lineage-test.sh target/debug/skbx

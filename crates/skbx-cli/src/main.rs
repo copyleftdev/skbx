@@ -921,6 +921,7 @@ fn convert_event(
         },
         match_origin: match raw.match_origin {
             skbx_sensor::MATCH_TRACKED_SKB => MatchOrigin::TrackedSkb,
+            skbx_sensor::MATCH_TRACKED_XDP => MatchOrigin::TrackedXdp,
             skbx_sensor::MATCH_STACK_ASSOCIATION => MatchOrigin::StackAssociation,
             _ => MatchOrigin::Filter,
         },
@@ -1034,6 +1035,7 @@ fn write_event(writer: &mut impl Write, format: OutputFormat, event: &TraceEvent
             let origin = match event.match_origin {
                 MatchOrigin::Filter => "filter",
                 MatchOrigin::TrackedSkb => "tracked_skb",
+                MatchOrigin::TrackedXdp => "tracked_xdp",
                 MatchOrigin::StackAssociation => "stack",
             };
             if let Some(timestamp) = &event.presentation_timestamp {

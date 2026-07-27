@@ -48,7 +48,6 @@ pub struct Defaults {
 impl Describe {
     pub fn current(version: &'static str) -> Self {
         let supported = CapabilityStatus::Supported;
-        let partial = CapabilityStatus::Partial;
         let planned = CapabilityStatus::Planned;
         Self {
             name: "skbx",
@@ -170,10 +169,10 @@ impl Describe {
                 },
                 Capability {
                     name: "skb-identity-tracking",
-                    status: partial,
+                    status: supported.clone(),
                     requires: "bounded LRU maps",
                     cost: "one bounded lookup/update per observed call",
-                    description: "continue matching a canonical lineage through clone/copy and veth copy-on-write address replacement",
+                    description: "continue a monotonic lineage through clone/copy, veth copy-on-write and XDP-frame-to-SKB conversion",
                 },
                 Capability {
                     name: "stack-associated-functions",
@@ -338,6 +337,7 @@ pub enum MatchOrigin {
     #[default]
     Filter,
     TrackedSkb,
+    TrackedXdp,
     StackAssociation,
 }
 
@@ -589,7 +589,7 @@ pub fn json_schema() -> serde_json::Value {
                     "identity": {"type": "string", "pattern": "^0x[0-9a-f]+$"},
                     "function": {"$ref": "#/$defs/FunctionRef"},
                     "association": {"enum": ["direct", "stack"]},
-                    "match_origin": {"enum": ["filter", "tracked_skb", "stack_association"]},
+                    "match_origin": {"enum": ["filter", "tracked_skb", "tracked_xdp", "stack_association"]},
                     "caller": {
                         "oneOf": [
                             {"$ref": "#/$defs/FunctionRef"},
