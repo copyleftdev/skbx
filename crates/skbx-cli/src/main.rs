@@ -3,8 +3,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use nix::sched::{CloneFlags, setns};
 use skbx_contract::{
     CONTRACT_VERSION, CaptureEnd, CaptureFilters, CaptureLimits, CaptureStart, Describe, Envelope,
-    EventAssociation, FunctionRef, PacketMeta, PacketTuple, PresentedTimestamp, StopReason,
-    TimestampMode, TraceEvent,
+    EventAssociation, FunctionRef, MatchOrigin, PacketMeta, PacketTuple, PresentedTimestamp,
+    StopReason, TimestampMode, TraceEvent,
 };
 use skbx_core::{
     BoundedMap, DEFAULT_BTF_PATH, DropReasonTable, SymbolTable, build_probe_plan_with_bpf_helpers,
@@ -566,6 +566,7 @@ fn capture(
             started_monotonic_ns,
             kernel_release: plan.kernel_release.clone(),
             probes: probes.clone(),
+            identity_hooks: Vec::new(),
             attachment_backend: String::new(),
             timestamp_mode: timestamp.label().into(),
             output_tunnel,
@@ -609,6 +610,7 @@ fn capture(
             },
         )?;
         start.attachment_backend = sensor.attachment_backend().into();
+        start.identity_hooks = sensor.identity_hooks().to_vec();
         let output: Box<dyn Write> = if output_path == Path::new("-") {
             Box::new(std::io::stdout())
         } else {
@@ -907,6 +909,7 @@ fn convert_event(
         pid: raw.pid,
         command: raw.command_string(),
         skb: format!("{:#x}", raw.skb_addr),
+        identity: format!("{:#x}", raw.identity),
         function: FunctionRef {
             address: format!("{:#x}", raw.function_ip),
             symbol: function_symbol,
@@ -915,6 +918,11 @@ fn convert_event(
             EventAssociation::Stack
         } else {
             EventAssociation::Direct
+        },
+        match_origin: match raw.match_origin {
+            skbx_sensor::MATCH_TRACKED_SKB => MatchOrigin::TrackedSkb,
+            skbx_sensor::MATCH_STACK_ASSOCIATION => MatchOrigin::StackAssociation,
+            _ => MatchOrigin::Filter,
         },
         caller: (raw.caller_ip != 0).then(|| FunctionRef {
             address: format!("{:#x}", raw.caller_ip),
@@ -995,14 +1003,14 @@ fn write_start(writer: &mut impl Write, format: OutputFormat, start: &CaptureSta
             if start.timestamp_mode == "none" {
                 writeln!(
                     writer,
-                    "{:<5} {:<8} {:<18} {:<8} {:<7} FUNCTION",
-                    "CPU", "PID", "SKB", "LEN", "ASSOC"
+                    "{:<5} {:<8} {:<18} {:<8} {:<7} {:<13} FUNCTION",
+                    "CPU", "PID", "SKB", "LEN", "ASSOC", "ORIGIN"
                 )?;
             } else {
                 writeln!(
                     writer,
-                    "{:<30} {:<5} {:<8} {:<18} {:<8} {:<7} FUNCTION",
-                    "TIME", "CPU", "PID", "SKB", "LEN", "ASSOC"
+                    "{:<30} {:<5} {:<8} {:<18} {:<8} {:<7} {:<13} FUNCTION",
+                    "TIME", "CPU", "PID", "SKB", "LEN", "ASSOC", "ORIGIN"
                 )?;
             }
             Ok(())
@@ -1023,23 +1031,35 @@ fn write_event(writer: &mut impl Write, format: OutputFormat, event: &TraceEvent
                 EventAssociation::Direct => "direct",
                 EventAssociation::Stack => "stack",
             };
+            let origin = match event.match_origin {
+                MatchOrigin::Filter => "filter",
+                MatchOrigin::TrackedSkb => "tracked_skb",
+                MatchOrigin::StackAssociation => "stack",
+            };
             if let Some(timestamp) = &event.presentation_timestamp {
                 writeln!(
                     writer,
-                    "{:<30} {:<5} {:<8} {:<18} {:<8} {:<7} {}",
+                    "{:<30} {:<5} {:<8} {:<18} {:<8} {:<7} {:<13} {}",
                     timestamp.display,
                     event.cpu,
                     event.pid,
                     event.skb,
                     event.packet.len,
                     association,
+                    origin,
                     function
                 )?;
             } else {
                 writeln!(
                     writer,
-                    "{:<5} {:<8} {:<18} {:<8} {:<7} {}",
-                    event.cpu, event.pid, event.skb, event.packet.len, association, function
+                    "{:<5} {:<8} {:<18} {:<8} {:<7} {:<13} {}",
+                    event.cpu,
+                    event.pid,
+                    event.skb,
+                    event.packet.len,
+                    association,
+                    origin,
+                    function
                 )?;
             }
             Ok(())

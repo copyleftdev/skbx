@@ -1,7 +1,7 @@
 use crate::{BoundedMap, route_handle};
 use serde::{Deserialize, Serialize};
 use skbx_contract::{
-    CONTRACT_VERSION, CaptureEnd, CaptureStart, Envelope, Reliability, RouteConsensus,
+    CONTRACT_VERSION, CaptureEnd, CaptureStart, Envelope, MatchOrigin, Reliability, RouteConsensus,
     RoutePattern, TraceEvent, TraceSummary,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -21,6 +21,7 @@ struct RouteBuilder {
     last_seq: u64,
     first_event: String,
     last_event: String,
+    first_skb: String,
     truncated: bool,
 }
 
@@ -32,6 +33,7 @@ impl RouteBuilder {
             last_seq: event.seq,
             first_event: event.handle.clone(),
             last_event: event.handle.clone(),
+            first_skb: event.skb.clone(),
             truncated: false,
         }
     }
@@ -121,19 +123,27 @@ pub fn replay<R: BufRead>(reader: R) -> Result<TraceSummary, ReplayError> {
                     .unwrap_or_else(|| event.function.address.clone());
                 *functions.entry(function.clone()).or_insert(0) += 1;
                 *processes.entry(event.command.clone()).or_insert(0) += 1;
-                skbs.insert(event.skb.clone());
+                let identity = event_identity(&event).to_owned();
+                skbs.insert(identity.clone());
                 let route_map = routes
                     .as_mut()
                     .expect("route state is initialized with capture_start");
-                let route = match route_map.remove(&event.skb) {
+                let route = match route_map.remove(&identity) {
                     Some(route)
                         if route
                             .functions
                             .first()
                             .is_some_and(|first| first == &function) =>
                     {
-                        completed_routes.push((event.skb.clone(), route));
-                        RouteBuilder::new(&event, function)
+                        if event.match_origin == MatchOrigin::Filter && event.skb == route.first_skb
+                        {
+                            completed_routes.push((identity.clone(), route));
+                            RouteBuilder::new(&event, function)
+                        } else {
+                            let mut route = route;
+                            route.observe(&event, function);
+                            route
+                        }
                     }
                     Some(mut route) => {
                         route.observe(&event, function);
@@ -142,7 +152,7 @@ pub fn replay<R: BufRead>(reader: R) -> Result<TraceSummary, ReplayError> {
                     None => RouteBuilder::new(&event, function),
                 };
                 debug_assert_eq!(route.last_seq, event.seq);
-                route_map.insert(event.skb.clone(), route);
+                route_map.insert(identity, route);
             }
             Envelope::CaptureEnd(value) => {
                 let capture = start.as_ref().ok_or_else(|| {
@@ -319,6 +329,14 @@ fn summarize_routes(
     (patterns, Some(consensus))
 }
 
+fn event_identity(event: &TraceEvent) -> &str {
+    if event.identity.is_empty() {
+        &event.skb
+    } else {
+        &event.identity
+    }
+}
+
 fn validate_event(event: &TraceEvent, start: &CaptureStart) -> Result<(), ReplayError> {
     if event.schema != CONTRACT_VERSION {
         return Err(ReplayError::Contract(format!(
@@ -375,7 +393,7 @@ pub fn explain<R: BufRead>(reader: R, handle: &str) -> Result<Explanation, Repla
             })?;
         if let Envelope::Event(event) = envelope {
             if event.handle == handle {
-                target_skb = Some(event.skb.clone());
+                target_skb = Some(event_identity(&event).to_owned());
                 target = Some(event);
                 break;
             }
@@ -406,7 +424,7 @@ pub fn explain<R: BufRead>(reader: R, handle: &str) -> Result<Explanation, Repla
 pub fn explain_file(path: &std::path::Path, handle: &str) -> Result<Explanation, ReplayError> {
     let first = std::io::BufReader::new(std::fs::File::open(path)?);
     let mut explanation = explain(first, handle)?;
-    let target_skb = explanation.target.skb.clone();
+    let target_skb = event_identity(&explanation.target).to_owned();
     let mut evidence = Vec::new();
     let mut matching = 0_usize;
 
@@ -422,7 +440,7 @@ pub fn explain_file(path: &std::path::Path, handle: &str) -> Result<Explanation,
                 source,
             })?;
         if let Envelope::Event(event) = envelope
-            && event.skb == target_skb
+            && event_identity(&event) == target_skb
         {
             matching += 1;
             if evidence.len() < MAX_EXPLAIN_NEIGHBORS {
@@ -449,6 +467,7 @@ mod tests {
             started_monotonic_ns: 1,
             kernel_release: "test".into(),
             probes: vec!["ip_rcv".into()],
+            identity_hooks: Vec::new(),
             attachment_backend: "kprobe".into(),
             timestamp_mode: "none".into(),
             output_tunnel: false,
@@ -470,11 +489,13 @@ mod tests {
             pid: 1,
             command: "init".into(),
             skb: "0x1".into(),
+            identity: "0x1".into(),
             function: FunctionRef {
                 address: "0x2".into(),
                 symbol: Some("ip_rcv".into()),
             },
             association: Default::default(),
+            match_origin: Default::default(),
             caller: None,
             stack: Vec::new(),
             parameters: Default::default(),
@@ -534,6 +555,37 @@ mod tests {
     }
 
     #[test]
+    fn replay_keeps_tracked_pointer_replacements_in_one_route() {
+        let base = fixture(false);
+        let mut lines: Vec<String> = base.lines().map(str::to_owned).collect();
+        let mut replacement: Envelope = serde_json::from_str(&lines[1]).unwrap();
+        let Envelope::Event(event) = &mut replacement else {
+            unreachable!("fixture line 2 is an event");
+        };
+        event.seq = 1;
+        event.handle = "event:111111111111111111111111".into();
+        event.skb = "0x2".into();
+        event.match_origin = MatchOrigin::TrackedSkb;
+        lines.push(serde_json::to_string(&replacement).unwrap());
+        lines.push(
+            serde_json::to_string(&Envelope::CaptureEnd(CaptureEnd {
+                schema: CONTRACT_VERSION.into(),
+                capture_id: "c1".into(),
+                events: 2,
+                reliability: Reliability::default(),
+                complete: true,
+                stop_reason: StopReason::Duration,
+            }))
+            .unwrap(),
+        );
+
+        let summary = replay(Cursor::new(lines.join("\n"))).unwrap();
+        assert_eq!(summary.distinct_skbs, 1);
+        assert_eq!(summary.route_patterns.len(), 1);
+        assert_eq!(summary.route_patterns[0].functions, ["ip_rcv", "ip_rcv"]);
+    }
+
+    #[test]
     fn route_consensus_marks_only_minor_patterns_as_outliers() {
         let route = |functions: &[&str], first_seq, event: &str| RouteBuilder {
             functions: functions.iter().map(|value| (*value).into()).collect(),
@@ -541,6 +593,7 @@ mod tests {
             last_seq: first_seq + functions.len() as u64,
             first_event: event.into(),
             last_event: event.into(),
+            first_skb: "0x1".into(),
             truncated: false,
         };
         let mut routes = BoundedMap::new(8);
@@ -569,6 +622,7 @@ mod tests {
             started_monotonic_ns: 1,
             kernel_release: "benchmark".into(),
             probes: vec!["ip_rcv".into()],
+            identity_hooks: Vec::new(),
             attachment_backend: "kprobe".into(),
             timestamp_mode: "none".into(),
             output_tunnel: false,
@@ -594,11 +648,13 @@ mod tests {
                 pid: (seq % 4096) as u32,
                 command: format!("worker-{}", seq % 16),
                 skb: format!("0x{:x}", seq % 10_000),
+                identity: format!("0x{:x}", seq % 10_000),
                 function: FunctionRef {
                     address: "0x1000".into(),
                     symbol: Some("ip_rcv".into()),
                 },
                 association: Default::default(),
+                match_origin: Default::default(),
                 caller: None,
                 stack: Vec::new(),
                 parameters: Default::default(),

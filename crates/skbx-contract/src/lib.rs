@@ -173,7 +173,7 @@ impl Describe {
                     status: partial,
                     requires: "bounded LRU maps",
                     cost: "one bounded lookup/update per observed call",
-                    description: "continue matching an SKB and propagate identity through clone/copy",
+                    description: "continue matching a canonical lineage through clone/copy and veth copy-on-write address replacement",
                 },
                 Capability {
                     name: "stack-associated-functions",
@@ -332,6 +332,15 @@ pub enum EventAssociation {
     Stack,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchOrigin {
+    #[default]
+    Filter,
+    TrackedSkb,
+    StackAssociation,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TraceEvent {
     pub schema: String,
@@ -345,9 +354,13 @@ pub struct TraceEvent {
     pub pid: u32,
     pub command: String,
     pub skb: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub identity: String,
     pub function: FunctionRef,
     #[serde(default)]
     pub association: EventAssociation,
+    #[serde(default)]
+    pub match_origin: MatchOrigin,
     #[serde(default)]
     pub caller: Option<FunctionRef>,
     #[serde(default)]
@@ -387,6 +400,8 @@ pub struct CaptureStart {
     pub started_monotonic_ns: u64,
     pub kernel_release: String,
     pub probes: Vec<String>,
+    #[serde(default)]
+    pub identity_hooks: Vec<String>,
     #[serde(default)]
     pub attachment_backend: String,
     #[serde(default)]
@@ -538,6 +553,11 @@ pub fn json_schema() -> serde_json::Value {
                     "started_monotonic_ns": {"type": "integer", "minimum": 0},
                     "kernel_release": {"type": "string"},
                     "probes": {"type": "array", "items": {"type": "string"}},
+                    "identity_hooks": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "uniqueItems": true
+                    },
                     "attachment_backend": {"enum": ["kprobe", "kprobe-multi"]},
                     "timestamp_mode": {"enum": ["none", "current", "relative", "absolute"]},
                     "output_tunnel": {"type": "boolean"},
@@ -566,8 +586,10 @@ pub fn json_schema() -> serde_json::Value {
                     "pid": {"type": "integer", "minimum": 0},
                     "command": {"type": "string"},
                     "skb": {"type": "string"},
+                    "identity": {"type": "string", "pattern": "^0x[0-9a-f]+$"},
                     "function": {"$ref": "#/$defs/FunctionRef"},
                     "association": {"enum": ["direct", "stack"]},
+                    "match_origin": {"enum": ["filter", "tracked_skb", "stack_association"]},
                     "caller": {
                         "oneOf": [
                             {"$ref": "#/$defs/FunctionRef"},

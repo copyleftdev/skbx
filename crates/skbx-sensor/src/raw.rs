@@ -13,6 +13,9 @@ pub const READ_CALLER_FAILED: u16 = 1 << 9;
 pub const READ_TUNNEL_TUPLE_FAILED: u16 = 1 << 10;
 pub const ASSOCIATION_DIRECT: u8 = 0;
 pub const ASSOCIATION_STACK: u8 = 1;
+pub const MATCH_FILTER: u8 = 0;
+pub const MATCH_TRACKED_SKB: u8 = 1;
+pub const MATCH_STACK_ASSOCIATION: u8 = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -34,6 +37,7 @@ pub struct RawPacketTuple {
 pub struct RawTraceEvent {
     pub timestamp_ns: u64,
     pub skb_addr: u64,
+    pub identity: u64,
     pub function_ip: u64,
     pub caller_ip: u64,
     pub pid: u32,
@@ -50,7 +54,8 @@ pub struct RawTraceEvent {
     pub control_buffer: [u32; 5],
     pub command: [u8; 16],
     pub association: u8,
-    pub _pad0: [u8; 3],
+    pub match_origin: u8,
+    pub _pad0: [u8; 2],
     pub stack_id: i64,
     pub parameter_second: u64,
     pub parameter_third: u64,
@@ -131,15 +136,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn raw_event_has_fixed_216_byte_contract() {
+    fn raw_event_has_fixed_224_byte_contract() {
         assert_eq!(std::mem::size_of::<RawPacketTuple>(), 44);
-        assert_eq!(RawTraceEvent::BYTE_LEN, 216);
+        assert_eq!(RawTraceEvent::BYTE_LEN, 224);
     }
 
     #[test]
     fn rejects_wrong_record_size() {
-        assert!(RawTraceEvent::from_bytes(&[0; 215]).is_none());
-        assert!(RawTraceEvent::from_bytes(&[0; 216]).is_some());
+        assert!(RawTraceEvent::from_bytes(&[0; 223]).is_none());
+        assert!(RawTraceEvent::from_bytes(&[0; 224]).is_some());
     }
 
     #[test]

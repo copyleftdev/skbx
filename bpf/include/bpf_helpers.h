@@ -15,6 +15,7 @@ static long (*bpf_map_update_elem)(void *map, const void *key,
 static long (*bpf_map_delete_elem)(void *map, const void *key) = (void *)3;
 static __u64 (*bpf_ktime_get_ns)(void) = (void *)5;
 static __u32 (*bpf_get_smp_processor_id)(void) = (void *)8;
+static long (*bpf_clone_redirect)(void *skb, __u32 ifindex, __u64 flags) = (void *)13;
 static __u64 (*bpf_get_current_pid_tgid)(void) = (void *)14;
 static long (*bpf_get_current_comm)(void *buf, __u32 size) = (void *)16;
 static long (*bpf_get_stackid)(void *ctx, void *map, __u64 flags) = (void *)27;

@@ -105,6 +105,7 @@ pub struct LiveSensor {
     _links: Vec<Link>,
     _object: Object,
     attachment_backend: &'static str,
+    identity_hooks: Vec<String>,
     enrichment_failures: u64,
 }
 
@@ -162,6 +163,21 @@ impl LiveSensor {
             .filter(|probe| probe.available && probe.skb_argument.is_none())
             .map(|probe| probe.function.clone())
             .collect();
+        let available_functions = available_kprobe_functions();
+        let identity_targets: Vec<(&str, &str)> = if config.track_skb != 0 {
+            [
+                ("skb_pp_cow_data", "skbx_replacement_arg2_entry"),
+                (
+                    "veth_convert_skb_to_xdp_buff",
+                    "skbx_replacement_arg3_entry",
+                ),
+            ]
+            .into_iter()
+            .filter(|(function, _)| available_functions.contains(*function))
+            .collect()
+        } else {
+            Vec::new()
+        };
         let mut builder = ObjectBuilder::default();
         if let Some(path) = btf_path {
             builder
@@ -185,7 +201,16 @@ impl LiveSensor {
                     && name == "skbx_skb_lifetime_end")
                 || (config.track_stack != 0
                     && !non_skb_functions.is_empty()
-                    && name == "skbx_stack_associated");
+                    && name == "skbx_stack_associated")
+                || (name == "skbx_replacement_arg2_entry"
+                    && identity_targets
+                        .iter()
+                        .any(|(_, program)| *program == "skbx_replacement_arg2_entry"))
+                || (name == "skbx_replacement_arg3_entry"
+                    && identity_targets
+                        .iter()
+                        .any(|(_, program)| *program == "skbx_replacement_arg3_entry"))
+                || (name == "skbx_replacement_exit" && !identity_targets.is_empty());
             program.set_autoload(active);
             if active
                 && (argument.is_some() || name == "skbx_stack_associated")
@@ -297,6 +322,30 @@ impl LiveSensor {
                     })?);
                 }
             }
+            for (function, entry_program) in &identity_targets {
+                let program = object
+                    .progs_mut()
+                    .find(|program| program.name() == OsStr::new(entry_program))
+                    .ok_or_else(|| {
+                        LiveError::Program(format!("program {entry_program} not found"))
+                    })?;
+                links.push(program.attach_kprobe(false, function).map_err(|error| {
+                    LiveError::Program(format!(
+                        "attach SKB replacement entry to {function}: {error}"
+                    ))
+                })?);
+                let program = object
+                    .progs_mut()
+                    .find(|program| program.name() == OsStr::new("skbx_replacement_exit"))
+                    .ok_or_else(|| {
+                        LiveError::Program("program skbx_replacement_exit not found".into())
+                    })?;
+                links.push(program.attach_kprobe(true, function).map_err(|error| {
+                    LiveError::Program(format!(
+                        "attach SKB replacement exit to {function}: {error}"
+                    ))
+                })?);
+            }
         }
 
         let events = map_handle(&object, "events")?;
@@ -313,6 +362,10 @@ impl LiveSensor {
             _links: links,
             _object: object,
             attachment_backend: mode.label(),
+            identity_hooks: identity_targets
+                .into_iter()
+                .map(|(function, _)| function.to_owned())
+                .collect(),
             enrichment_failures: 0,
         })
     }
@@ -380,6 +433,10 @@ impl LiveSensor {
 
     pub fn attachment_backend(&self) -> &'static str {
         self.attachment_backend
+    }
+
+    pub fn identity_hooks(&self) -> &[String] {
+        &self.identity_hooks
     }
 }
 
@@ -486,4 +543,21 @@ fn kernel_stats_from_bytes(bytes: &[u8]) -> Option<KernelStats> {
         read_failures: u64::from_ne_bytes(bytes[8..16].try_into().ok()?),
         filtered_events: u64::from_ne_bytes(bytes[16..24].try_into().ok()?),
     })
+}
+
+fn available_kprobe_functions() -> BTreeSet<String> {
+    [
+        "/sys/kernel/tracing/available_filter_functions",
+        "/sys/kernel/debug/tracing/available_filter_functions",
+    ]
+    .into_iter()
+    .find_map(|path| std::fs::read_to_string(path).ok())
+    .map(|contents| {
+        contents
+            .lines()
+            .filter_map(|line| line.split_ascii_whitespace().next())
+            .map(str::to_owned)
+            .collect()
+    })
+    .unwrap_or_default()
 }

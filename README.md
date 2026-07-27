@@ -29,7 +29,7 @@ the plan. Named or all loaded kernel modules can be included through their
 split BTF. It records:
 
 - monotonic kernel timestamp;
-- SKB address;
+- observed SKB address plus a capture-local monotonic clone/COW lineage ID;
 - probed instruction address and resolved symbol;
 - PID, CPU and command;
 - packet length, protocol, mark and interface index;
@@ -45,10 +45,11 @@ split BTF. It records:
 
 Capture also supports in-kernel mark/interface/netns filters, outer and
 independent inner-L2/inner-L3 libpcap expressions, optional kernel stacks,
-bounded SKB clone/copy tracking and an agent-safe `--ready-file`
-synchronization point. Named interfaces are resolved in the namespace
-selected by `--filter-netns`, and device-less output SKBs fall back to their
-socket namespace.
+bounded SKB clone/copy/COW tracking and an agent-safe `--ready-file`
+synchronization point. Every event labels whether it matched the configured
+filter, a tracked identity, or a stack association. Named interfaces are
+resolved in the namespace selected by `--filter-netns`, and device-less
+output SKBs fall back to their socket namespace.
 
 It does **not yet** claim full `pwru` parity. Packet-byte/BTF dumps, TC/XDP
 program tracing and BPF map argument tracing remain explicit gaps.
@@ -117,7 +118,10 @@ same-SKB evidence across the logical-free teardown path:
 at `kfree_skbmem`, before the SKB allocation itself is returned. `sudo
 scripts/live-bpf-helper-test.sh target/debug/skbx` loads an isolated TC
 classifier and proves automatic JIT-callee discovery with ordered
-`tcf_classify` → map-helper evidence.
+`tcf_classify` → map-helper evidence. `sudo
+scripts/live-skb-replacement-test.sh target/debug/skbx` forces clone and veth
+XDP copy-on-write transitions, then proves that three observed SKB addresses
+retain one canonical identity through replay and `explain`.
 
 ## Architecture
 

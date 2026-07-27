@@ -42,6 +42,9 @@
 #define READ_TUNNEL_TUPLE_FAILED (1u << 10)
 #define ASSOCIATION_DIRECT 0
 #define ASSOCIATION_STACK  1
+#define MATCH_FILTER 0
+#define MATCH_TRACKED_SKB 1
+#define MATCH_STACK_ASSOCIATION 2
 
 #define ETH_P_IP   0x0800
 #define ETH_P_IPV6 0x86dd
@@ -136,6 +139,7 @@ struct skbx_packet_tuple {
 struct skbx_trace_event {
     __u64 timestamp_ns;
     __u64 skb_addr;
+    __u64 identity;
     __u64 function_ip;
     __u64 caller_ip;
     __u32 pid;
@@ -152,7 +156,8 @@ struct skbx_trace_event {
     __u32 control_buffer[5];
     char command[16];
     __u8 association;
-    __u8 _pad0[3];
+    __u8 match_origin;
+    __u8 _pad0[2];
     __s64 stack_id;
     __u64 parameter_second;
     __u64 parameter_third;
@@ -204,15 +209,34 @@ struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 65536);
     __type(key, __u64);
-    __type(value, __u8);
+    __type(value, __u64);
 } tracked_skbs SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u64);
+} lineage_sequence SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 4096);
     __type(key, __u64);
-    __type(value, __u8);
+    __type(value, __u64);
 } pending_clones SEC(".maps");
+
+struct pending_skb_replacement {
+    __u64 slot;
+    __u64 identity;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 4096);
+    __type(key, __u64);
+    __type(value, struct pending_skb_replacement);
+} pending_skb_replacements SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -694,11 +718,14 @@ filtered:
 }
 
 static __always_inline int should_trace(struct sk_buff *skb,
-                                        struct kernel_stats *counters)
+                                        struct kernel_stats *counters,
+                                        __u64 *identity)
 {
     int matched = configured_filter_match(skb);
     __u64 key = (__u64)skb;
-    __u8 one = 1;
+    __u64 *tracked;
+
+    *identity = key;
 
     if (matched < 0) {
         if (counters)
@@ -707,10 +734,23 @@ static __always_inline int should_trace(struct sk_buff *skb,
     }
 
     if (CONFIG.track_skb && skb) {
+        tracked = bpf_map_lookup_elem(&tracked_skbs, &key);
         if (matched) {
-            bpf_map_update_elem(&tracked_skbs, &key, &one, 0);
-        } else if (bpf_map_lookup_elem(&tracked_skbs, &key)) {
-            return 1;
+            if (tracked)
+                *identity = *tracked;
+            else {
+                __u32 zero = 0;
+                __u64 *sequence =
+                    bpf_map_lookup_elem(&lineage_sequence, &zero);
+                __u64 next = sequence ?
+                    __sync_fetch_and_add(sequence, 1) + 1 : key;
+
+                *identity = next;
+                bpf_map_update_elem(&tracked_skbs, &key, &next, 0);
+            }
+        } else if (tracked) {
+            *identity = *tracked;
+            return 2;
         }
     }
     if (!matched && counters)
@@ -758,9 +798,19 @@ static __always_inline int trace_skb_associated(struct pt_regs *ctx,
                                                 __u8 association)
 {
     struct kernel_stats *counters = stats();
-    if (association == ASSOCIATION_DIRECT &&
-        !should_trace(skb, counters))
-        return 0;
+    int match = MATCH_FILTER;
+    __u64 identity = (__u64)skb;
+    __u64 *tracked_identity;
+
+    if (association == ASSOCIATION_DIRECT) {
+        match = should_trace(skb, counters, &identity);
+        if (!match)
+            return 0;
+    } else if (CONFIG.track_skb && skb) {
+        tracked_identity = bpf_map_lookup_elem(&tracked_skbs, &identity);
+        if (tracked_identity)
+            identity = *tracked_identity;
+    }
     if (association == ASSOCIATION_DIRECT && CONFIG.track_stack)
         associate_stack(ctx, skb);
     struct skbx_trace_event *event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
@@ -774,8 +824,12 @@ static __always_inline int trace_skb_associated(struct pt_regs *ctx,
     __builtin_memset(event, 0, sizeof(*event));
     event->stack_id = -1;
     event->association = association;
+    event->match_origin = association == ASSOCIATION_STACK ?
+        MATCH_STACK_ASSOCIATION :
+        (match == 2 ? MATCH_TRACKED_SKB : MATCH_FILTER);
     event->timestamp_ns = bpf_ktime_get_ns();
     event->skb_addr = (__u64)skb;
+    event->identity = identity;
     event->function_ip = (__u64)PT_REGS_IP(ctx);
     event->parameter_second = (__u64)PT_REGS_PARM2(ctx);
     event->parameter_third = (__u64)PT_REGS_PARM3(ctx);
@@ -896,11 +950,13 @@ int skbx_clone_entry(struct pt_regs *ctx)
 {
     __u64 original = PT_REGS_PARM1(ctx);
     __u64 pid_tgid = bpf_get_current_pid_tgid();
-    __u8 one = 1;
+    __u64 *identity;
 
-    if (CONFIG.track_skb &&
-        bpf_map_lookup_elem(&tracked_skbs, &original))
-        bpf_map_update_elem(&pending_clones, &pid_tgid, &one, 0);
+    if (!CONFIG.track_skb)
+        return 0;
+    identity = bpf_map_lookup_elem(&tracked_skbs, &original);
+    if (identity)
+        bpf_map_update_elem(&pending_clones, &pid_tgid, identity, 0);
     return 0;
 }
 
@@ -909,14 +965,70 @@ int skbx_clone_exit(struct pt_regs *ctx)
 {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u64 cloned = PT_REGS_RC(ctx);
-    __u8 one = 1;
+    __u64 *identity;
 
-    if (!CONFIG.track_skb ||
-        !bpf_map_lookup_elem(&pending_clones, &pid_tgid))
+    if (!CONFIG.track_skb)
         return 0;
-    if (cloned)
-        bpf_map_update_elem(&tracked_skbs, &cloned, &one, 0);
+    identity = bpf_map_lookup_elem(&pending_clones, &pid_tgid);
+    if (!identity)
+        return 0;
+    if (cloned) {
+        __u64 value = *identity;
+        bpf_map_update_elem(&tracked_skbs, &cloned, &value, 0);
+    }
     bpf_map_delete_elem(&pending_clones, &pid_tgid);
+    return 0;
+}
+
+static __always_inline int replacement_entry(__u64 slot)
+{
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u64 original = 0;
+    __u64 *identity;
+    struct pending_skb_replacement pending = {};
+
+    if (!CONFIG.track_skb || !slot ||
+        bpf_probe_read_kernel(&original, sizeof(original), (void *)slot) ||
+        !original)
+        return 0;
+    identity = bpf_map_lookup_elem(&tracked_skbs, &original);
+    if (!identity)
+        return 0;
+    pending.slot = slot;
+    pending.identity = *identity;
+    bpf_map_update_elem(&pending_skb_replacements, &pid_tgid, &pending, 0);
+    return 0;
+}
+
+SEC("kprobe")
+int skbx_replacement_arg2_entry(struct pt_regs *ctx)
+{
+    return replacement_entry(PT_REGS_PARM2(ctx));
+}
+
+SEC("kprobe")
+int skbx_replacement_arg3_entry(struct pt_regs *ctx)
+{
+    return replacement_entry(PT_REGS_PARM3(ctx));
+}
+
+SEC("kretprobe")
+int skbx_replacement_exit(struct pt_regs *ctx)
+{
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct pending_skb_replacement *pending;
+    __u64 replacement = 0;
+
+    if (!CONFIG.track_skb)
+        return 0;
+    pending = bpf_map_lookup_elem(&pending_skb_replacements, &pid_tgid);
+    if (!pending)
+        return 0;
+    if (!bpf_probe_read_kernel(&replacement, sizeof(replacement),
+                               (void *)pending->slot) &&
+        replacement)
+        bpf_map_update_elem(&tracked_skbs, &replacement, &pending->identity, 0);
+    bpf_map_delete_elem(&pending_skb_replacements, &pid_tgid);
     return 0;
 }
 
