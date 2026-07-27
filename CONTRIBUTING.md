@@ -100,4 +100,5 @@ and prose claims without executable evidence.
 - Update `docs/pwru-parity.md` only when the required evidence exists.
 
 By contributing, you agree that your userspace contribution is licensed under
-AGPL-3.0-or-later. Contributions to `bpf/` are GPL-2.0-only.
+AGPL-3.0-or-later. Contributions to `crates/skbx-sensor/bpf/` are
+GPL-2.0-only.

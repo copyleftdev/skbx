@@ -210,15 +210,15 @@ If a vendor-specific Ubuntu kernel-tools package omits `bpftool`, install
 `linux-tools-generic` and put the directory containing its `bpftool` binary
 first on `PATH`.
 
-Then build:
+Then install directly from GitHub:
 
 ```console
-git clone https://github.com/copyleftdev/skbx.git
-cd skbx
-cargo build --release --locked
-sudo install -m 0755 target/release/skbx /usr/local/bin/skbx
+cargo install --git https://github.com/copyleftdev/skbx --locked skbx-cli
 skbx doctor
 ```
+
+Cargo installs the `skbx` binary under `~/.cargo/bin` by default. To build from
+a checkout instead, run `cargo build --release --locked`.
 
 Replay, schema inspection, and evidence lookup do not require root.
 
@@ -254,6 +254,5 @@ footer. Packet folklore is welcome; packet evidence is better.
 
 ## License
 
-Userspace is licensed under
-[AGPL-3.0-or-later](LICENSE). The eBPF program under `bpf/` is
-GPL-2.0-only.
+Userspace is licensed under [AGPL-3.0-or-later](LICENSE). The eBPF program
+under `crates/skbx-sensor/bpf/` is GPL-2.0-only.

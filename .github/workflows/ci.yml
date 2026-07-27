@@ -81,6 +81,32 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked --offline
 
+      - name: Verify crates.io package contents
+        run: |
+          cargo package --workspace --locked --offline --no-verify
+          tar -tf target/package/skbx-sensor-*.crate |
+            grep -q 'skbx-sensor-.*/bpf/skbx.bpf.c'
+          tar -tf target/package/skbx-sensor-*.crate |
+            grep -q 'skbx-sensor-.*/bpf/include/bpf_helpers.h'
+
+      - name: Verify documented Cargo install
+        env:
+          CARGO_INSTALL_ROOT: ${{ runner.temp }}/skbx-cargo-install
+        run: |
+          cargo install \
+            --git "file://$GITHUB_WORKSPACE" \
+            --rev "$GITHUB_SHA" \
+            --locked \
+            --root "$CARGO_INSTALL_ROOT" \
+            skbx-cli
+          version="$(cargo metadata --no-deps --format-version 1 |
+            jq -r '.packages[] | select(.name == "skbx-cli") | .version')"
+          "$CARGO_INSTALL_ROOT/bin/skbx" describe --format json | jq -e --arg version "$version" '
+            .name == "skbx"
+            and .version == $version
+            and .contract_version == "traceq/0.1.0"
+          '
+
       - name: Verify agent contract
         run: |
           target/release/skbx describe --format json | jq -e '

@@ -4,7 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
+description = "Planning, filtering, evidence, and replay engine for skbx"
+keywords = ["ebpf", "linux", "networking", "observability", "tracing"]
+categories = ["network-programming", "development-tools::debugging"]
 
 [dependencies]
 blake3.workspace = true
