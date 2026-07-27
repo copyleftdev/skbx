@@ -12,6 +12,36 @@ permissions:
   contents: read
 
 jobs:
+  msrv:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install eBPF build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes linux-tools-generic clang llvm libelf-dev libpcap-dev pkg-config
+          bpftool_bin="$(find /usr/lib -type f -name bpftool -print -quit)"
+          test -n "$bpftool_bin"
+          echo "$(dirname "$bpftool_bin")" >> "$GITHUB_PATH"
+          "$bpftool_bin" version
+
+      - name: Install minimum supported Rust
+        uses: dtolnay/rust-toolchain@1.85.0
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: msrv-1.85
+
+      - name: Fetch locked dependencies
+        run: cargo fetch --locked
+
+      - name: Check minimum supported Rust
+        run: cargo check --workspace --all-features --locked --offline
+
   verify:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

@@ -7,6 +7,11 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - dependencies
+    ignore:
+      # time 0.3.46+ requires Rust 1.88; skbx supports Rust 1.85+.
+      - dependency-name: time
+        versions:
+          - ">= 0.3.46"
 
   - package-ecosystem: github-actions
     directory: /
