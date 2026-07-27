@@ -30,7 +30,7 @@ trap cleanup EXIT
 
 ARCH_INCLUDE=/usr/include/$(uname -m)-linux-gnu
 clang -O2 -g -target bpf \
-    -I bpf/include \
+    -I crates/skbx-sensor/bpf/include \
     -I "${ARCH_INCLUDE}" \
     -c scripts/fixtures/xdp-pass.bpf.c \
     -o "${OBJECT}"

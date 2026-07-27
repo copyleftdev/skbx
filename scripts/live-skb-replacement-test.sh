@@ -58,12 +58,12 @@ ip -n "${NS_A}" neigh add 10.246.1.2 lladdr "${DESTINATION_MAC}" \
 
 ARCH_INCLUDE=/usr/include/$(uname -m)-linux-gnu
 clang -O2 -g -target bpf \
-    -I bpf/include \
+    -I crates/skbx-sensor/bpf/include \
     -I "${ARCH_INCLUDE}" \
     -c scripts/fixtures/xdp-pass.bpf.c \
     -o "${XDP_OBJECT}"
 clang -O2 -g -target bpf \
-    -I bpf/include \
+    -I crates/skbx-sensor/bpf/include \
     -I "${ARCH_INCLUDE}" \
     -DTARGET_IFINDEX="${TARGET_IFINDEX}" \
     -c scripts/fixtures/clone-redirect.bpf.c \

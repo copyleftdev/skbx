@@ -29,7 +29,7 @@ cleanup() {
 trap cleanup EXIT
 
 clang -O2 -g -target bpf \
-    -I bpf/include \
+    -I crates/skbx-sensor/bpf/include \
     -I /usr/include/x86_64-linux-gnu \
     -c scripts/fixtures/helper-classifier.bpf.c \
     -o "${OBJECT}"

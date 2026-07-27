@@ -50,12 +50,12 @@ ip -n "${NS_A}" neigh replace 10.247.1.2 lladdr "${DESTINATION_MAC}" \
 
 ARCH_INCLUDE=/usr/include/$(uname -m)-linux-gnu
 clang -O2 -g -target bpf \
-    -I bpf/include \
+    -I crates/skbx-sensor/bpf/include \
     -I "${ARCH_INCLUDE}" \
     -c scripts/fixtures/xdp-pass.bpf.c \
     -o "${PASS_OBJECT}"
 clang -O2 -g -target bpf \
-    -I bpf/include \
+    -I crates/skbx-sensor/bpf/include \
     -I "${ARCH_INCLUDE}" \
     -c scripts/fixtures/xdp-tx.bpf.c \
     -o "${TX_OBJECT}"

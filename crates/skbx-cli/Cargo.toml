@@ -4,7 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
+description = "Agent-first Linux packet-path observation with replayable evidence"
+keywords = ["ebpf", "linux", "networking", "observability", "tracing"]
+categories = ["command-line-utilities", "network-programming"]
 
 [[bin]]
 name = "skbx"
@@ -31,3 +35,6 @@ time.workspace = true
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+[package.metadata.docs.rs]
+no-default-features = true
