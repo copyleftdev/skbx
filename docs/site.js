@@ -7,6 +7,7 @@
   const header = document.querySelector("[data-header]");
   const copyStatus = document.querySelector("#copy-status");
   const copyButtons = document.querySelectorAll("[data-copy]");
+  let copyStatusTimer = 0;
 
   const updateHeader = () => {
     header?.classList.toggle("is-scrolled", window.scrollY > 24);
@@ -30,7 +31,11 @@
           button.textContent = "Copied";
           window.setTimeout(() => { button.textContent = original; }, 1800);
         }
-        if (copyStatus) copyStatus.textContent = "Install command copied to clipboard.";
+        if (copyStatus) {
+          copyStatus.textContent = button.dataset.copySuccess || "Command copied to clipboard.";
+          window.clearTimeout(copyStatusTimer);
+          copyStatusTimer = window.setTimeout(() => { copyStatus.textContent = ""; }, 2600);
+        }
       } catch {
         if (copyStatus) {
           copyStatus.textContent = "Clipboard access was blocked. Select the command and copy it manually.";
@@ -38,6 +43,76 @@
       }
     });
   });
+
+  const guide = document.querySelector(".guide");
+  const guideSections = [...document.querySelectorAll("[data-guide-section]")];
+  const guideLinks = [...document.querySelectorAll("[data-guide-link]")];
+  const guideLinkList = document.querySelector(".guide-toc ol");
+  const guideCount = document.querySelector("[data-guide-count]");
+  const guideCurrent = document.querySelector("[data-guide-current]");
+  const readingProgress = document.querySelector("[data-reading-progress]");
+  let guideFrame = 0;
+  let lastGuideIndex = -1;
+
+  const updateGuideState = () => {
+    guideFrame = 0;
+    if (!guide || guideSections.length === 0) return;
+
+    const marker = window.scrollY + window.innerHeight * 0.32;
+    let activeIndex = 0;
+    guideSections.forEach((section, index) => {
+      if (section.offsetTop <= marker) activeIndex = index;
+    });
+
+    const activeSection = guideSections[activeIndex];
+    guideLinks.forEach((link) => {
+      const isActive = link.getAttribute("href") === `#${activeSection.id}`;
+      if (isActive) {
+        link.setAttribute("aria-current", "location");
+      } else {
+        link.removeAttribute("aria-current");
+      }
+    });
+
+    if (guideCount) {
+      const current = String(activeIndex).padStart(2, "0");
+      const total = String(guideSections.length - 1).padStart(2, "0");
+      guideCount.textContent = `${current} / ${total}`;
+    }
+
+    if (activeIndex !== lastGuideIndex && guideLinkList) {
+      const activeLink = guideLinks.find((link) => link.getAttribute("href") === `#${activeSection.id}`);
+      if (activeLink && guideLinkList.scrollWidth > guideLinkList.clientWidth) {
+        const left = activeLink.offsetLeft - (guideLinkList.clientWidth - activeLink.clientWidth) / 2;
+        guideLinkList.scrollTo({
+          left: Math.max(0, left),
+          behavior: reducedMotion.matches ? "auto" : "smooth"
+        });
+      }
+      lastGuideIndex = activeIndex;
+    }
+
+    if (guideCurrent) {
+      guideCurrent.textContent = activeSection.querySelector("h2")?.textContent || "Evidence lifecycle";
+    }
+
+    if (readingProgress) {
+      const total = Math.max(1, guide.offsetHeight - window.innerHeight);
+      const progress = Math.min(1, Math.max(0, (window.scrollY - guide.offsetTop) / total));
+      readingProgress.style.transform = `scaleX(${progress})`;
+    }
+  };
+
+  const requestGuideUpdate = () => {
+    if (guideFrame) return;
+    guideFrame = window.requestAnimationFrame(updateGuideState);
+  };
+
+  if (guide) {
+    updateGuideState();
+    window.addEventListener("scroll", requestGuideUpdate, { passive: true });
+    window.addEventListener("resize", requestGuideUpdate, { passive: true });
+  }
 
   const steps = [...document.querySelectorAll(".flight-step")];
   if ("IntersectionObserver" in window) {
