@@ -385,13 +385,11 @@ fn parse_radix_u64(literal: &str) -> Option<u64> {
         .or_else(|| literal.strip_prefix("0O"))
     {
         (value, 8)
-    } else if let Some(value) = literal
-        .strip_prefix("0b")
-        .or_else(|| literal.strip_prefix("0B"))
-    {
-        (value, 2)
     } else {
-        return None;
+        let value = literal
+            .strip_prefix("0b")
+            .or_else(|| literal.strip_prefix("0B"))?;
+        (value, 2)
     };
     u64::from_str_radix(digits, radix).ok()
 }
