@@ -605,10 +605,10 @@ fn discover_netns_names(enabled: bool) -> BTreeMap<u32, String> {
         (Path::new("/proc/self/ns/net"), "current"),
         (Path::new("/proc/1/ns/net"), "host"),
     ] {
-        if let Ok(metadata) = fs::metadata(path)
-            && let Ok(inode) = u32::try_from(metadata.ino())
-        {
-            names.insert(inode, name.into());
+        if let Ok(metadata) = fs::metadata(path) {
+            if let Ok(inode) = u32::try_from(metadata.ino()) {
+                names.insert(inode, name.into());
+            }
         }
     }
 
@@ -623,10 +623,10 @@ fn discover_netns_names(enabled: bool) -> BTreeMap<u32, String> {
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        if let Ok(metadata) = fs::metadata(&path)
-            && let Ok(inode) = u32::try_from(metadata.ino())
-        {
-            names.insert(inode, name.into());
+        if let Ok(metadata) = fs::metadata(&path) {
+            if let Ok(inode) = u32::try_from(metadata.ino()) {
+                names.insert(inode, name.into());
+            }
         }
     }
     names

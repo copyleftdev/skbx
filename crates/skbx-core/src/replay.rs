@@ -418,13 +418,13 @@ fn validate_event(event: &TraceEvent, start: &CaptureStart) -> Result<(), Replay
             event.seq
         )));
     }
-    if let Some(program) = &event.bpf_program
-        && !start.bpf_programs.contains(program)
-    {
-        return Err(ReplayError::Contract(format!(
-            "event {} references undeclared BPF program {}",
-            event.seq, program.id
-        )));
+    if let Some(program) = &event.bpf_program {
+        if !start.bpf_programs.contains(program) {
+            return Err(ReplayError::Contract(format!(
+                "event {} references undeclared BPF program {}",
+                event.seq, program.id
+            )));
+        }
     }
     if event.bpf_program_action.is_some()
         && !(event
@@ -537,12 +537,12 @@ pub fn explain_with_context<R1: BufRead, R2: BufRead>(
                 line: index + 1,
                 source,
             })?;
-        if let Envelope::Event(event) = envelope
-            && event_identity(&event) == target_skb
-        {
-            matching += 1;
-            if evidence.len() < MAX_EXPLAIN_NEIGHBORS {
-                evidence.push(event);
+        if let Envelope::Event(event) = envelope {
+            if event_identity(&event) == target_skb {
+                matching += 1;
+                if evidence.len() < MAX_EXPLAIN_NEIGHBORS {
+                    evidence.push(event);
+                }
             }
         }
     }
