@@ -46,8 +46,9 @@ ip netns exec "${NS_A}" tc qdisc add dev "${DEV_A}" clsact
     --max-events 64 \
     --filter-netns "/var/run/netns/${NS_A}" \
     --filter-ifname "${DEV_A}" \
-    --filter-skb-expr '(skb->mark == 41 || skb->mark == 42) && skb->dev->ifindex > 0' \
+    --filter-skb-expr 'skb->mark = 0b101010 && skb->pkt_type = 0 && skb->protocol = 0x0800 && skb->dev->ifindex > 0' \
     --output-skb-metadata 'skb->mark' \
+    --output-skb-metadata 'skb->pkt_type' \
     --output-skb-metadata 'skb->dev->ifindex' \
     --ready-file "${READY}" \
     --output "${TRACE}" &
@@ -74,13 +75,15 @@ CAPTURE_PID=
 jq -s -e '
     (map(select(.kind == "capture_start")) | length == 1) and
     (map(select(.kind == "capture_start"))[0].filters.skb_expression ==
-        "(skb->mark == 41 || skb->mark == 42) && skb->dev->ifindex > 0") and
+        "skb->mark = 0b101010 && skb->pkt_type = 0 && skb->protocol = 0x0800 && skb->dev->ifindex > 0") and
     ([.[] | select(.kind == "event")] | length > 0) and
     ([.[] | select(.kind == "event")] | all(
         .packet.mark == 42 and (
             (.metadata | map({key: .expression, value: .}) | from_entries) as $metadata |
             ($metadata["skb->mark"].read_error == null) and
             ($metadata["skb->mark"].value.value == 42) and
+            ($metadata["skb->pkt_type"].read_error == null) and
+            ($metadata["skb->pkt_type"].value.value == 0) and
             ($metadata["skb->dev->ifindex"].read_error == null) and
             ($metadata["skb->dev->ifindex"].value.value > 0)
         )

@@ -100,12 +100,7 @@ fn resolve_scalar_filter(
     let projections = resolve_metadata(&paths, btf_path)?;
     let mut conditions = Vec::with_capacity(parsed.len());
     for ((group, (_, comparison, literal)), projection) in parsed.into_iter().zip(projections) {
-        let (value, signed) = parse_literal(
-            source,
-            &literal,
-            projection.descriptor.encoding,
-            projection.descriptor.size,
-        )?;
+        let (value, signed) = parse_literal(source, &literal, &projection)?;
         conditions.push(ResolvedSkbFilterCondition {
             access: projection.access,
             comparison,
@@ -279,6 +274,7 @@ fn parse_clause(
         (">=", ScalarComparison::GreaterOrEqual),
         ("<", ScalarComparison::Less),
         (">", ScalarComparison::Greater),
+        ("=", ScalarComparison::Equal),
     ];
     let Some((operator, comparison, position)) =
         clause.char_indices().find_map(|(position, character)| {
@@ -322,75 +318,100 @@ fn parse_clause(
 fn parse_literal(
     expression: &str,
     literal: &str,
-    encoding: MetadataEncoding,
-    size: u8,
+    projection: &ResolvedMetadataProjection,
 ) -> Result<(u64, bool), SkbFilterError> {
-    let bits = u32::from(size) * 8;
-    match encoding {
-        MetadataEncoding::Boolean => {
-            let value = match literal {
+    let encoding = projection.descriptor.encoding.clone();
+    let mut value = if let Some((_, value)) = projection
+        .enum_constants
+        .iter()
+        .find(|(name, _)| name == literal)
+    {
+        *value
+    } else {
+        match encoding {
+            MetadataEncoding::Boolean => match literal {
                 "true" | "1" => 1,
                 "false" | "0" => 0,
-                _ => {
-                    return Err(invalid(
-                        expression,
-                        "boolean literals are true, false, 0 or 1",
-                    ));
-                }
-            };
-            Ok((value, false))
+                _ => parse_u64(literal).ok_or_else(|| {
+                    invalid(expression, format!("invalid boolean literal {literal:?}"))
+                })?,
+            },
+            MetadataEncoding::Signed => parse_i64(literal)
+                .map(|value| value as u64)
+                .or_else(|| parse_u64(literal))
+                .ok_or_else(|| {
+                    invalid(expression, format!("invalid signed literal {literal:?}"))
+                })?,
+            MetadataEncoding::Unsigned | MetadataEncoding::Pointer => parse_u64(literal)
+                .ok_or_else(|| {
+                    invalid(expression, format!("invalid unsigned literal {literal:?}"))
+                })?,
         }
-        MetadataEncoding::Signed => {
-            let value = parse_i64(literal).ok_or_else(|| {
-                invalid(expression, format!("invalid signed literal {literal:?}"))
-            })?;
-            let (minimum, maximum) = if bits == 64 {
-                (i64::MIN, i64::MAX)
-            } else {
-                (-(1_i64 << (bits - 1)), (1_i64 << (bits - 1)) - 1)
-            };
-            if !(minimum..=maximum).contains(&value) {
-                return Err(invalid(
-                    expression,
-                    format!("{literal:?} does not fit a signed {bits}-bit field"),
-                ));
-            }
-            Ok((value as u64, true))
-        }
-        MetadataEncoding::Unsigned | MetadataEncoding::Pointer => {
-            let value = parse_u64(literal).ok_or_else(|| {
-                invalid(expression, format!("invalid unsigned literal {literal:?}"))
-            })?;
-            if bits < 64 && value >= 1_u64 << bits {
-                return Err(invalid(
-                    expression,
-                    format!("{literal:?} does not fit an unsigned {bits}-bit field"),
-                ));
-            }
-            Ok((value, false))
-        }
+    };
+
+    let bits = if projection.access.bitfield_size != 0 {
+        u32::from(projection.access.bitfield_size)
+    } else {
+        u32::from(projection.descriptor.size) * 8
+    };
+    if bits < 64 {
+        value &= (1_u64 << bits) - 1;
     }
+    if projection.big_endian {
+        value = match projection.descriptor.size {
+            1 => value,
+            2 => u64::from((value as u16).to_be()),
+            4 => u64::from((value as u32).to_be()),
+            8 => value.to_be(),
+            _ => {
+                return Err(invalid(
+                    expression,
+                    "big-endian scalar has an unsupported storage size",
+                ));
+            }
+        };
+    }
+    Ok((value, encoding == MetadataEncoding::Signed))
 }
 
-fn parse_i64(literal: &str) -> Option<i64> {
-    if let Some(value) = literal.strip_prefix("-0x") {
-        i64::from_str_radix(value, 16).ok()?.checked_neg()
-    } else if let Some(value) = literal
+fn parse_radix_u64(literal: &str) -> Option<u64> {
+    let (digits, radix) = if let Some(value) = literal
         .strip_prefix("0x")
         .or_else(|| literal.strip_prefix("0X"))
     {
-        i64::from_str_radix(value, 16).ok()
+        (value, 16)
+    } else if let Some(value) = literal
+        .strip_prefix("0o")
+        .or_else(|| literal.strip_prefix("0O"))
+    {
+        (value, 8)
+    } else if let Some(value) = literal
+        .strip_prefix("0b")
+        .or_else(|| literal.strip_prefix("0B"))
+    {
+        (value, 2)
+    } else {
+        return None;
+    };
+    u64::from_str_radix(digits, radix).ok()
+}
+
+fn parse_i64(literal: &str) -> Option<i64> {
+    if let Some(value) = literal.strip_prefix('-') {
+        parse_radix_u64(value)
+            .and_then(|value| i64::try_from(value).ok())
+            .and_then(i64::checked_neg)
+            .or_else(|| literal.parse().ok())
+    } else if let Some(value) = parse_radix_u64(literal) {
+        i64::try_from(value).ok()
     } else {
         literal.parse().ok()
     }
 }
 
 fn parse_u64(literal: &str) -> Option<u64> {
-    if let Some(value) = literal
-        .strip_prefix("0x")
-        .or_else(|| literal.strip_prefix("0X"))
-    {
-        u64::from_str_radix(value, 16).ok()
+    if let Some(value) = parse_radix_u64(literal) {
+        Some(value)
     } else {
         literal.parse().ok()
     }
@@ -421,9 +442,9 @@ mod tests {
 
     #[test]
     fn rejects_unbounded_or_ambiguous_syntax() {
-        assert!(resolve_skb_filter(Some("skb->mark = 1"), None).is_err());
         assert!(resolve_skb_filter(Some("skb->mark == -1"), None).is_err());
-        assert!(resolve_skb_filter(Some("skb->mark == 0x100000000"), None).is_err());
+        assert!(resolve_skb_filter(Some("skb->mark += 1"), None).is_err());
+        assert!(resolve_skb_filter(Some("skb->mark == UNKNOWN_ENUM_VALUE"), None).is_err());
         assert!(resolve_skb_filter(Some("skb->mark == 1 &&"), None).is_err());
         assert!(resolve_skb_filter(
             Some(
@@ -432,6 +453,30 @@ mod tests {
             None
         )
         .is_err());
+    }
+
+    #[test]
+    fn matches_bice_scalar_literals_bitfields_and_byte_order() {
+        let filter = resolve_skb_filter(
+            Some(
+                "skb->mark = 0b101010 || skb->mark == 0o52 || skb->pkt_type == 0xffff || skb->protocol == 0x0800",
+            ),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(filter.conditions.len(), 4);
+        assert_eq!(filter.conditions[0].value, 42);
+        assert_eq!(filter.conditions[1].value, 42);
+        assert_eq!(filter.conditions[2].value, 7);
+        assert_eq!(filter.conditions[2].access.bitfield_size, 3);
+        assert_eq!(filter.conditions[2].access.size, 8);
+        assert_eq!(filter.conditions[3].value, u64::from(0x0800_u16.to_be()));
+
+        let truncated = resolve_skb_filter(Some("skb->mark == 0x100000001"), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(truncated.conditions[0].value, 1);
     }
 
     #[test]

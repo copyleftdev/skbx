@@ -302,7 +302,7 @@ struct metadata_access {
     __u8 dereference_mask;
     __u8 steps;
     __u8 size;
-    __u8 _pad;
+    __u8 bitfield_size;
 };
 
 struct scalar_filter_condition {
@@ -873,6 +873,7 @@ static __always_inline int read_scalar_access(
     __u64 *value)
 {
     void *cursor = root;
+    int status;
 
     *value = 0;
     if (!root || !access->steps ||
@@ -900,16 +901,30 @@ static __always_inline int read_scalar_access(
         }
         switch (access->size) {
         case 1:
-            return bpf_probe_read_kernel(value, 1, address);
+            status = bpf_probe_read_kernel(value, 1, address);
+            break;
         case 2:
-            return bpf_probe_read_kernel(value, 2, address);
+            status = bpf_probe_read_kernel(value, 2, address);
+            break;
         case 4:
-            return bpf_probe_read_kernel(value, 4, address);
+            status = bpf_probe_read_kernel(value, 4, address);
+            break;
         case 8:
-            return bpf_probe_read_kernel(value, 8, address);
+            status = bpf_probe_read_kernel(value, 8, address);
+            break;
         default:
             return -1;
         }
+        if (status)
+            return status;
+        if (access->bitfield_size) {
+            __u8 shift = (access->dereference_mask >> 4) & 7;
+            __u64 mask = access->bitfield_size == 64 ?
+                ~0ULL : (1ULL << access->bitfield_size) - 1;
+
+            *value = (*value >> shift) & mask;
+        }
+        return 0;
     }
     return -1;
 }

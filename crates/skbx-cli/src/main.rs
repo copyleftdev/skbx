@@ -872,7 +872,7 @@ fn capture(
                         dereference_mask: projection.access.dereference_mask,
                         steps: projection.access.steps,
                         size: projection.access.size,
-                        _pad: 0,
+                        bitfield_size: projection.access.bitfield_size,
                     },
                 )
             }),
@@ -885,7 +885,7 @@ fn capture(
                         dereference_mask: projection.access.dereference_mask,
                         steps: projection.access.steps,
                         size: projection.access.size,
-                        _pad: 0,
+                        bitfield_size: projection.access.bitfield_size,
                     },
                 )
             }),
@@ -903,7 +903,7 @@ fn capture(
                                 dereference_mask: condition.access.dereference_mask,
                                 steps: condition.access.steps,
                                 size: condition.access.size,
-                                _pad: 0,
+                                bitfield_size: condition.access.bitfield_size,
                             },
                             _pad0: [0; 4],
                             value: condition.value,
@@ -947,7 +947,7 @@ fn capture(
                                 dereference_mask: condition.access.dereference_mask,
                                 steps: condition.access.steps,
                                 size: condition.access.size,
-                                _pad: 0,
+                                bitfield_size: condition.access.bitfield_size,
                             },
                             _pad0: [0; 4],
                             value: condition.value,
@@ -2362,6 +2362,8 @@ mod tests {
                     size: 4,
                 },
                 access: Default::default(),
+                enum_constants: Vec::new(),
+                big_endian: false,
             },
             skbx_core::ResolvedMetadataProjection {
                 descriptor: skbx_contract::MetadataProjection {
@@ -2371,6 +2373,8 @@ mod tests {
                     size: 4,
                 },
                 access: Default::default(),
+                enum_constants: Vec::new(),
+                big_endian: false,
             },
         ];
         let metadata = convert_metadata(

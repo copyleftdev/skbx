@@ -12,12 +12,15 @@ pub struct MetadataAccessPlan {
     pub dereference_mask: u8,
     pub steps: u8,
     pub size: u8,
+    pub bitfield_size: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedMetadataProjection {
     pub descriptor: MetadataProjection,
     pub access: MetadataAccessPlan,
+    pub enum_constants: Vec<(String, u64)>,
+    pub big_endian: bool,
 }
 
 #[derive(Debug, Error)]
@@ -83,7 +86,7 @@ fn resolve_metadata(
 
     expressions
         .iter()
-        .map(|expression| resolve_one(&btf, &root, expression, expression_root, type_name))
+        .map(|expression| resolve_one(&btf, &root, expression, expression_root))
         .collect()
 }
 
@@ -92,9 +95,8 @@ fn resolve_one(
     root: &btf_rs::Struct,
     expression: &str,
     expression_root: &'static str,
-    type_name: &'static str,
 ) -> Result<ResolvedMetadataProjection, MetadataError> {
-    let components = parse_expression(expression, expression_root, type_name)?;
+    let components = parse_expression(expression, expression_root)?;
     if components.len() > MAX_METADATA_ACCESS_STEPS {
         return Err(resolve_error(
             expression,
@@ -126,27 +128,27 @@ fn resolve_one(
                 format!("field {field:?} is absent from target kernel BTF"),
             )
         })?;
-        if member.bit_offset % 8 != 0 || member.bitfield_size.is_some_and(|size| size != 0) {
+        let bitfield_size = member.bitfield_size.unwrap_or(0);
+        let bitfield_offset = (member.bit_offset & 7) as u8;
+        if bitfield_size > 64 || u32::from(bitfield_offset) + bitfield_size > 64 {
             return Err(resolve_error(
                 expression,
-                format!("bitfield {field:?} is not a byte-addressable scalar"),
+                format!("bitfield {field:?} crosses the bounded 64-bit scalar read"),
             ));
         }
         access.offsets[index] = member.bit_offset / 8;
+        if bitfield_size != 0 {
+            access.dereference_mask |= bitfield_offset << 4;
+            access.bitfield_size = bitfield_size as u8;
+        }
         let selected = member.selected;
 
-        if let Some((next_connector, _)) = components.get(index + 1) {
-            container = match next_connector {
-                Connector::Arrow => {
-                    let pointer = match selected {
-                        Type::Ptr(pointer) => pointer,
-                        _ => {
-                            return Err(resolve_error(
-                                expression,
-                                format!("{field:?} is not a pointer but is followed by ->"),
-                            ));
-                        }
-                    };
+        if components.get(index + 1).is_some() {
+            container = match selected {
+                // Match bice: `.` and `->` are both accepted member tokens;
+                // target BTF determines whether an intermediate value is
+                // dereferenced or traversed inline.
+                Type::Ptr(pointer) => {
                     access.dereference_mask |= 1 << index;
                     let target = btf
                         .resolve_chained_type(&pointer)
@@ -154,17 +156,13 @@ fn resolve_one(
                     strip_modifiers(btf, target)
                         .map_err(|error| resolve_error(expression, error.to_string()))?
                 }
-                Connector::Dot => match selected {
-                    Type::Struct(_) | Type::Union(_) => selected,
-                    _ => {
-                        return Err(resolve_error(
-                            expression,
-                            format!(
-                                "{field:?} is not an inline struct or union but is followed by ."
-                            ),
-                        ));
-                    }
-                },
+                Type::Struct(_) | Type::Union(_) => selected,
+                _ => {
+                    return Err(resolve_error(
+                        expression,
+                        format!("{field:?} is not a traversable pointer, struct or union"),
+                    ));
+                }
             };
             continue;
         }
@@ -181,7 +179,7 @@ fn resolve_one(
                 format!("field {field:?} is {size} bytes; supported scalar size is 1..=8"),
             ));
         }
-        access.size = size as u8;
+        access.size = if bitfield_size == 0 { size as u8 } else { 8 };
         let type_name = selected
             .as_btf_type()
             .and_then(|value| btf.resolve_name(value).ok())
@@ -195,6 +193,8 @@ fn resolve_one(
                 size: size as u8,
             },
             access,
+            enum_constants: enum_constants(btf, &selected),
+            big_endian: bitfield_size == 0 && member.big_endian,
         });
     }
 
@@ -205,6 +205,7 @@ struct FoundMember {
     bit_offset: u32,
     bitfield_size: Option<u32>,
     selected: Type,
+    big_endian: bool,
 }
 
 fn find_member(
@@ -221,11 +222,11 @@ fn find_member(
         let Ok(name) = btf.resolve_name(member) else {
             continue;
         };
-        let Some(selected) = btf
-            .resolve_chained_type(member)
-            .ok()
-            .and_then(|value| strip_modifiers(btf, value).ok())
-        else {
+        let Ok(referenced) = btf.resolve_chained_type(member) else {
+            continue;
+        };
+        let big_endian = is_big_endian(btf, &referenced);
+        let Ok(selected) = strip_modifiers(btf, referenced) else {
             continue;
         };
         if name == field {
@@ -233,6 +234,7 @@ fn find_member(
                 bit_offset: base_bit_offset + member.bit_offset(),
                 bitfield_size: member.bitfield_size(),
                 selected,
+                big_endian,
             });
         }
         if !name.is_empty() {
@@ -287,6 +289,75 @@ fn scalar_shape(value: &Type) -> Option<(MetadataEncoding, usize, &'static str)>
     }
 }
 
+fn enum_constants(btf: &Btf, value: &Type) -> Vec<(String, u64)> {
+    match value {
+        // bice 0.1.3 resolves a symbolic enum operand to its ordinal position,
+        // not to the BTF member value. Preserve that observable behavior.
+        Type::Enum(value) => value
+            .members
+            .iter()
+            .enumerate()
+            .filter_map(|(index, member)| {
+                btf.resolve_name(member)
+                    .ok()
+                    .map(|name| (name, index as u64))
+            })
+            .collect(),
+        Type::Enum64(value) => value
+            .members
+            .iter()
+            .enumerate()
+            .filter_map(|(index, member)| {
+                btf.resolve_name(member)
+                    .ok()
+                    .map(|name| (name, index as u64))
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn is_big_endian(btf: &Btf, value: &Type) -> bool {
+    let mut value = value.clone();
+    loop {
+        value = match &value {
+            Type::Typedef(inner) => {
+                if btf
+                    .resolve_name(inner)
+                    .is_ok_and(|name| name.starts_with("__be"))
+                {
+                    return true;
+                }
+                match btf.resolve_chained_type(inner) {
+                    Ok(value) => value,
+                    Err(_) => return false,
+                }
+            }
+            Type::Volatile(inner) => match btf.resolve_chained_type(inner) {
+                Ok(value) => value,
+                Err(_) => return false,
+            },
+            Type::Const(inner) => match btf.resolve_chained_type(inner) {
+                Ok(value) => value,
+                Err(_) => return false,
+            },
+            Type::Restrict(inner) => match btf.resolve_chained_type(inner) {
+                Ok(value) => value,
+                Err(_) => return false,
+            },
+            Type::DeclTag(inner) => match btf.resolve_chained_type(inner) {
+                Ok(value) => value,
+                Err(_) => return false,
+            },
+            Type::TypeTag(inner) => match btf.resolve_chained_type(inner) {
+                Ok(value) => value,
+                Err(_) => return false,
+            },
+            _ => return false,
+        };
+    }
+}
+
 fn strip_modifiers(btf: &Btf, mut value: Type) -> Result<Type, btf_rs::Error> {
     loop {
         value = match &value {
@@ -304,14 +375,17 @@ fn strip_modifiers(btf: &Btf, mut value: Type) -> Result<Type, btf_rs::Error> {
 fn parse_expression(
     expression: &str,
     expression_root: &'static str,
-    type_name: &'static str,
 ) -> Result<Vec<(Connector, String)>, MetadataError> {
-    let mut remaining = expression.strip_prefix(expression_root).ok_or_else(|| {
-        invalid_error(
-            expression,
-            format!("expression must begin with {expression_root}"),
-        )
-    })?;
+    let mut remaining = expression
+        .trim_start()
+        .strip_prefix(expression_root)
+        .ok_or_else(|| {
+            invalid_error(
+                expression,
+                format!("expression must begin with {expression_root}"),
+            )
+        })?
+        .trim_start();
     let mut components = Vec::new();
     while !remaining.is_empty() {
         let (connector, rest) = if let Some(rest) = remaining.strip_prefix("->") {
@@ -324,12 +398,7 @@ fn parse_expression(
                 "fields must be joined with -> or .",
             ));
         };
-        if components.is_empty() && connector != Connector::Arrow {
-            return Err(invalid_error(
-                expression,
-                format!("the first {type_name} field must be accessed with ->"),
-            ));
-        }
+        let rest = rest.trim_start();
         let end = rest
             .find(|character: char| !character.is_ascii_alphanumeric() && character != '_')
             .unwrap_or(rest.len());
@@ -346,7 +415,7 @@ fn parse_expression(
             ));
         }
         components.push((connector, field.into()));
-        remaining = &rest[end..];
+        remaining = rest[end..].trim_start();
     }
     if components.is_empty() {
         return Err(invalid_error(expression, "at least one field is required"));
@@ -375,16 +444,19 @@ mod tests {
     #[test]
     fn parses_only_bounded_c_style_field_paths() {
         assert_eq!(
-            parse_expression("skb->dev->ifindex", "skb", "sk_buff").unwrap(),
+            parse_expression("skb->dev->ifindex", "skb").unwrap(),
             [
                 (Connector::Arrow, "dev".into()),
                 (Connector::Arrow, "ifindex".into())
             ]
         );
-        assert!(parse_expression("skb.mark", "skb", "sk_buff").is_err());
-        assert!(parse_expression("skb->mark == 1", "skb", "sk_buff").is_err());
-        assert!(parse_expression("other->mark", "skb", "sk_buff").is_err());
-        assert!(parse_expression("skb->", "skb", "sk_buff").is_err());
+        assert_eq!(
+            parse_expression(" skb . mark ", "skb").unwrap(),
+            [(Connector::Dot, "mark".into())]
+        );
+        assert!(parse_expression("skb->mark == 1", "skb").is_err());
+        assert!(parse_expression("other->mark", "skb").is_err());
+        assert!(parse_expression("skb->", "skb").is_err());
     }
 
     #[test]
@@ -394,11 +466,12 @@ mod tests {
                 "skb->mark".into(),
                 "skb->hash".into(),
                 "skb->dev->ifindex".into(),
+                "skb->users.refs.counter".into(),
             ],
             None,
         )
         .unwrap();
-        assert_eq!(projections.len(), 3);
+        assert_eq!(projections.len(), 4);
         assert_eq!(
             projections[0].descriptor.encoding,
             MetadataEncoding::Unsigned
@@ -406,6 +479,39 @@ mod tests {
         assert_eq!(projections[0].descriptor.size, 4);
         assert_eq!(projections[2].access.steps, 2);
         assert_eq!(projections[2].access.dereference_mask, 1);
+        assert_eq!(projections[3].access.steps, 3);
+        assert_eq!(projections[3].access.dereference_mask, 0);
+    }
+
+    #[test]
+    fn resolves_host_bitfields_byte_order_and_enum_symbols() {
+        let projections = resolve_skb_metadata(
+            &[
+                "skb->pkt_type".into(),
+                "skb->protocol".into(),
+                "skb.dev.ifindex".into(),
+            ],
+            None,
+        )
+        .unwrap();
+        assert_eq!(projections[0].access.bitfield_size, 3);
+        assert_eq!(projections[0].access.size, 8);
+        assert!(projections[1].big_endian);
+        assert_eq!(projections[2].access.dereference_mask, 1);
+
+        let enum_projection =
+            resolve_metadata(&["links->status".into()], None, "links", "dev_links_info")
+                .unwrap()
+                .remove(0);
+        assert_eq!(
+            enum_projection.enum_constants,
+            [
+                ("DL_DEV_NO_DRIVER".into(), 0),
+                ("DL_DEV_PROBING".into(), 1),
+                ("DL_DEV_DRIVER_BOUND".into(), 2),
+                ("DL_DEV_UNBINDING".into(), 3),
+            ]
+        );
     }
 
     #[test]

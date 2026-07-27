@@ -70,8 +70,10 @@ filter, a tracked identity, or a stack association. Named interfaces are
 resolved in the namespace selected by `--filter-netns`, and device-less
 output SKBs fall back to their socket namespace.
 
-It does **not yet** claim full `pwru` parity. Unrestricted expression syntax
-and universal XDP-to-SKB lineage across copying drivers remain explicit gaps.
+The audited compatibility surface and its executable evidence are recorded in
+[`docs/pwru-parity.md`](docs/pwru-parity.md). XDP-to-SKB lineage is proven for
+the instrumented frame-transport paths; unobserved driver-private copying
+paths remain an explicit evidence boundary rather than a silent claim.
 
 ## Commands
 
@@ -94,7 +96,7 @@ sudo skbx capture --probe ip_rcv \
   --output-skb-metadata 'skb->mark' \
   --output-skb-metadata 'skb->dev->ifindex' --output trace.jsonl
 sudo skbx capture --probe ip_rcv \
-  --filter-skb-expr '(skb->mark == 41 || skb->mark == 42) && skb->dev->ifindex > 0' \
+  --filter-skb-expr 'skb->mark = 0b101010 && skb->protocol = 0x0800' \
   --output trace.jsonl
 sudo skbx capture --probe ip_rcv --output-skb \
   --output-skb-shared-info --output trace.jsonl
@@ -102,7 +104,7 @@ sudo skbx capture --filter-trace-tc \
   --output-skb-metadata 'skb->mark' --output-skb \
   --output-skb-shared-info --output trace.jsonl
 sudo skbx capture --filter-trace-xdp \
-  --filter-xdp-expr '(xdp->frame_sz == 0 || xdp->frame_sz >= 1)' \
+  --filter-xdp-expr '(xdp->frame_sz = 0 || xdp->frame_sz >= 0o1)' \
   --output-xdp-metadata 'xdp->frame_sz' \
   --output-xdp-metadata 'xdp->rxq->dev->ifindex' \
   --output trace.jsonl icmp

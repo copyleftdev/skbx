@@ -38,7 +38,7 @@ pub struct MetadataAccess {
     pub dereference_mask: u8,
     pub steps: u8,
     pub size: u8,
-    pub _pad: u8,
+    pub bitfield_size: u8,
 }
 
 #[repr(C)]
