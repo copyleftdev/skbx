@@ -196,6 +196,7 @@ On Ubuntu:
 
 ```console
 sudo apt-get install "linux-tools-$(uname -r)" clang llvm libelf-dev libpcap-dev pkg-config
+export PATH="/usr/lib/linux-tools/$(uname -r):$PATH"
 ```
 
 On Debian:

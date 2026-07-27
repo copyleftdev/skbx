@@ -20,7 +20,11 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install eBPF build prerequisites
-        run: sudo apt-get update && sudo apt-get install --yes "linux-tools-$(uname -r)" clang llvm libelf-dev libpcap-dev pkg-config
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes "linux-tools-$(uname -r)" clang llvm libelf-dev libpcap-dev pkg-config
+          echo "/usr/lib/linux-tools/$(uname -r)" >> "$GITHUB_PATH"
+          "/usr/lib/linux-tools/$(uname -r)/bpftool" version
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
