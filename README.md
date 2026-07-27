@@ -7,6 +7,7 @@
   <a href="LICENSE"><img alt="License: AGPL-3.0-or-later" src="https://img.shields.io/badge/license-AGPL--3.0--or--later-c8f66b"></a>
   <img alt="Linux" src="https://img.shields.io/badge/platform-Linux-5de4d0">
   <img alt="Rust 1.85+" src="https://img.shields.io/badge/rust-1.85%2B-9b8cff">
+  <a href="https://tokentip.to/@copyleftdev"><img alt="Tip my tokens" src="https://tokentip.to/badge/copyleftdev.svg?logo=1"></a>
 </p>
 
 # skbx
