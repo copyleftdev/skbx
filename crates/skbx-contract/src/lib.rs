@@ -207,7 +207,7 @@ impl Describe {
                     status: supported.clone(),
                     requires: "target kernel BTF",
                     cost: "up to four bounded scalar reads per observed call",
-                    description: "compile up to four &&-joined typed scalar comparisons into immutable access plans with explicit read-failure telemetry",
+                    description: "normalize parenthesized &&/|| typed scalar expressions to at most four immutable comparisons with explicit read-failure telemetry",
                 },
                 Capability {
                     name: "atomic-btf-structure-dumps",
@@ -256,7 +256,7 @@ impl Describe {
                     status: supported.clone(),
                     requires: "target kernel BTF and XDP program tracing",
                     cost: "up to four bounded scalar reads per observed XDP entry",
-                    description: "compile up to four &&-joined typed xdp_buff comparisons into immutable access plans with explicit read-failure telemetry",
+                    description: "normalize parenthesized &&/|| typed xdp_buff expressions to at most four immutable comparisons with explicit read-failure telemetry",
                 },
                 Capability {
                     name: "xdp-exit-action-evidence",

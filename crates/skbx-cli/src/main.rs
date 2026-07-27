@@ -133,10 +133,10 @@ enum Command {
         /// Keep following matching SKBs and their clone/copy descendants.
         #[arg(long)]
         filter_track_skb: bool,
-        /// Apply up to four BTF-checked scalar comparisons joined with &&.
+        /// Apply a BTF-checked &&/|| scalar expression, bounded to four expanded comparisons.
         #[arg(long)]
         filter_skb_expr: Option<String>,
-        /// Apply up to four xdp_buff BTF-checked scalar comparisons joined with &&.
+        /// Apply a BTF-checked xdp_buff &&/|| expression, bounded to four expanded comparisons.
         #[arg(long)]
         filter_xdp_expr: Option<String>,
         /// Apply a libpcap expression to the inner Ethernet frame when present.
@@ -822,7 +822,8 @@ fn capture(
                                 }
                             },
                             signed: u8::from(condition.signed),
-                            _pad1: [0; 6],
+                            group: condition.group,
+                            _pad1: [0; 5],
                         }
                     })
             }),
@@ -865,7 +866,8 @@ fn capture(
                                 }
                             },
                             signed: u8::from(condition.signed),
-                            _pad1: [0; 6],
+                            group: condition.group,
+                            _pad1: [0; 5],
                         }
                     })
             }),

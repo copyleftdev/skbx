@@ -311,7 +311,8 @@ struct scalar_filter_condition {
     __u64 value;
     __u8 comparison;
     __u8 is_signed;
-    __u8 _pad1[6];
+    __u8 group;
+    __u8 _pad1[5];
 };
 
 _Static_assert(sizeof(struct metadata_access) == 20,
@@ -933,6 +934,10 @@ static __always_inline int scalar_filter_match(
     void *root, __u32 count,
     const volatile struct scalar_filter_condition *conditions)
 {
+    __u8 current_group = 0;
+    int group_match = 1;
+    int unknown_group = 0;
+
     if (count > MAX_METADATA_PROJECTIONS)
         return -1;
 #pragma clang loop unroll(full)
@@ -944,8 +949,24 @@ static __always_inline int scalar_filter_match(
 
         if (index >= count)
             break;
-        if (read_scalar_access(root, &condition->access, &observed))
+        if (condition->group >= MAX_METADATA_PROJECTIONS)
             return -1;
+        if (condition->group != current_group) {
+            if (condition->group != current_group + 1)
+                return -1;
+            if (group_match == 1)
+                return 1;
+            if (group_match < 0)
+                unknown_group = 1;
+            current_group = condition->group;
+            group_match = 1;
+        }
+        if (!group_match)
+            continue;
+        if (read_scalar_access(root, &condition->access, &observed)) {
+            group_match = -1;
+            continue;
+        }
         if (condition->is_signed) {
             __s64 left = signed_scalar(observed, condition->access.size);
             __s64 right = (__s64)condition->value;
@@ -997,9 +1018,13 @@ static __always_inline int scalar_filter_match(
             }
         }
         if (!matched)
-            return 0;
+            group_match = 0;
     }
-    return 1;
+    if (group_match == 1)
+        return 1;
+    if (group_match < 0)
+        unknown_group = 1;
+    return unknown_group ? -1 : 0;
 }
 
 static __always_inline int configured_filter_match(struct sk_buff *skb)

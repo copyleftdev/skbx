@@ -46,7 +46,7 @@ ip netns exec "${NS_A}" tc qdisc add dev "${DEV_A}" clsact
     --max-events 64 \
     --filter-netns "/var/run/netns/${NS_A}" \
     --filter-ifname "${DEV_A}" \
-    --filter-skb-expr 'skb->mark == 42 && skb->dev->ifindex > 0' \
+    --filter-skb-expr '(skb->mark == 41 || skb->mark == 42) && skb->dev->ifindex > 0' \
     --output-skb-metadata 'skb->mark' \
     --output-skb-metadata 'skb->dev->ifindex' \
     --ready-file "${READY}" \
@@ -74,7 +74,7 @@ CAPTURE_PID=
 jq -s -e '
     (map(select(.kind == "capture_start")) | length == 1) and
     (map(select(.kind == "capture_start"))[0].filters.skb_expression ==
-        "skb->mark == 42 && skb->dev->ifindex > 0") and
+        "(skb->mark == 41 || skb->mark == 42) && skb->dev->ifindex > 0") and
     ([.[] | select(.kind == "event")] | length > 0) and
     ([.[] | select(.kind == "event")] | all(
         .packet.mark == 42 and (

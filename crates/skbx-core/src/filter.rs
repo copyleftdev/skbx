@@ -7,6 +7,8 @@ use std::path::Path;
 use thiserror::Error;
 
 pub const MAX_SKB_FILTER_CONDITIONS: usize = 4;
+const MAX_SKB_FILTER_EXPRESSION_BYTES: usize = 4096;
+const MAX_SKB_FILTER_NESTING: usize = 16;
 type MetadataResolver =
     fn(&[String], Option<&Path>) -> Result<Vec<ResolvedMetadataProjection>, MetadataError>;
 
@@ -26,6 +28,7 @@ pub struct ResolvedSkbFilterCondition {
     pub comparison: ScalarComparison,
     pub value: u64,
     pub signed: bool,
+    pub group: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,7 +39,9 @@ pub struct ResolvedSkbFilter {
 
 #[derive(Debug, Error)]
 pub enum SkbFilterError {
-    #[error("scalar filter supports at most {MAX_SKB_FILTER_CONDITIONS} &&-joined conditions")]
+    #[error(
+        "scalar filter supports at most {MAX_SKB_FILTER_CONDITIONS} comparisons after bounded boolean expansion"
+    )]
     TooMany,
     #[error("invalid scalar filter expression {expression:?}: {reason}")]
     Invalid { expression: String, reason: String },
@@ -66,28 +71,35 @@ fn resolve_scalar_filter(
     let Some(source) = expression.filter(|value| !value.trim().is_empty()) else {
         return Ok(None);
     };
-    if source.contains("||") {
+    if source.len() > MAX_SKB_FILTER_EXPRESSION_BYTES {
         return Err(invalid(
             source,
-            "|| is not supported; use bounded && predicates",
+            format!("expression exceeds the {MAX_SKB_FILTER_EXPRESSION_BYTES}-byte parser bound"),
         ));
     }
-    let clauses: Vec<&str> = source.split("&&").map(str::trim).collect();
-    if clauses.is_empty() || clauses.iter().any(|clause| clause.is_empty()) {
-        return Err(invalid(source, "every && operand must be a comparison"));
-    }
-    if clauses.len() > MAX_SKB_FILTER_CONDITIONS {
+    let expression = BooleanParser::new(source).parse()?;
+    let groups = bounded_dnf(expression)?;
+    if groups.iter().map(Vec::len).sum::<usize>() > MAX_SKB_FILTER_CONDITIONS {
         return Err(SkbFilterError::TooMany);
     }
 
-    let parsed: Vec<_> = clauses
+    let parsed = groups
         .iter()
-        .map(|clause| parse_clause(source, clause))
-        .collect::<Result<_, _>>()?;
-    let paths: Vec<String> = parsed.iter().map(|(path, _, _)| path.clone()).collect();
+        .enumerate()
+        .flat_map(|(group, clauses)| {
+            clauses
+                .iter()
+                .map(move |clause| (group as u8, parse_clause(source, clause)))
+        })
+        .map(|(group, parsed)| parsed.map(|parsed| (group, parsed)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let paths: Vec<String> = parsed
+        .iter()
+        .map(|(_, (path, _, _))| path.clone())
+        .collect();
     let projections = resolve_metadata(&paths, btf_path)?;
     let mut conditions = Vec::with_capacity(parsed.len());
-    for ((_, comparison, literal), projection) in parsed.into_iter().zip(projections) {
+    for ((group, (_, comparison, literal)), projection) in parsed.into_iter().zip(projections) {
         let (value, signed) = parse_literal(
             source,
             &literal,
@@ -99,12 +111,161 @@ fn resolve_scalar_filter(
             comparison,
             value,
             signed,
+            group,
         });
     }
     Ok(Some(ResolvedSkbFilter {
         source: source.into(),
         conditions,
     }))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum BooleanExpression {
+    Clause(String),
+    And(Box<Self>, Box<Self>),
+    Or(Box<Self>, Box<Self>),
+}
+
+struct BooleanParser<'a> {
+    source: &'a str,
+    cursor: usize,
+    clauses: usize,
+    nesting: usize,
+}
+
+impl<'a> BooleanParser<'a> {
+    fn new(source: &'a str) -> Self {
+        Self {
+            source,
+            cursor: 0,
+            clauses: 0,
+            nesting: 0,
+        }
+    }
+
+    fn parse(mut self) -> Result<BooleanExpression, SkbFilterError> {
+        let expression = self.parse_or()?;
+        self.skip_whitespace();
+        if self.cursor != self.source.len() {
+            return Err(invalid(
+                self.source,
+                format!("unexpected syntax at {:?}", &self.source[self.cursor..]),
+            ));
+        }
+        Ok(expression)
+    }
+
+    fn parse_or(&mut self) -> Result<BooleanExpression, SkbFilterError> {
+        let mut expression = self.parse_and()?;
+        while self.consume("||") {
+            expression = BooleanExpression::Or(Box::new(expression), Box::new(self.parse_and()?));
+        }
+        Ok(expression)
+    }
+
+    fn parse_and(&mut self) -> Result<BooleanExpression, SkbFilterError> {
+        let mut expression = self.parse_primary()?;
+        while self.consume("&&") {
+            expression =
+                BooleanExpression::And(Box::new(expression), Box::new(self.parse_primary()?));
+        }
+        Ok(expression)
+    }
+
+    fn parse_primary(&mut self) -> Result<BooleanExpression, SkbFilterError> {
+        self.skip_whitespace();
+        if self.consume("(") {
+            if self.nesting >= MAX_SKB_FILTER_NESTING {
+                return Err(invalid(
+                    self.source,
+                    format!("parentheses exceed the {MAX_SKB_FILTER_NESTING}-level nesting bound"),
+                ));
+            }
+            self.nesting += 1;
+            let expression = self.parse_or()?;
+            self.nesting -= 1;
+            if !self.consume(")") {
+                return Err(invalid(self.source, "missing closing parenthesis"));
+            }
+            return Ok(expression);
+        }
+
+        let start = self.cursor;
+        while self.cursor < self.source.len() {
+            let remainder = &self.source[self.cursor..];
+            if remainder.starts_with("&&")
+                || remainder.starts_with("||")
+                || remainder.starts_with(')')
+            {
+                break;
+            }
+            let character = remainder
+                .chars()
+                .next()
+                .expect("cursor is inside source bounds");
+            self.cursor += character.len_utf8();
+        }
+        let clause = self.source[start..self.cursor].trim();
+        if clause.is_empty() {
+            return Err(invalid(
+                self.source,
+                "every boolean operand must be a comparison",
+            ));
+        }
+        self.clauses += 1;
+        if self.clauses > MAX_SKB_FILTER_CONDITIONS {
+            return Err(SkbFilterError::TooMany);
+        }
+        Ok(BooleanExpression::Clause(clause.into()))
+    }
+
+    fn consume(&mut self, token: &str) -> bool {
+        self.skip_whitespace();
+        if self.source[self.cursor..].starts_with(token) {
+            self.cursor += token.len();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn skip_whitespace(&mut self) {
+        while let Some(character) = self.source[self.cursor..].chars().next() {
+            if !character.is_whitespace() {
+                break;
+            }
+            self.cursor += character.len_utf8();
+        }
+    }
+}
+
+fn bounded_dnf(expression: BooleanExpression) -> Result<Vec<Vec<String>>, SkbFilterError> {
+    let groups = match expression {
+        BooleanExpression::Clause(clause) => vec![vec![clause]],
+        BooleanExpression::Or(left, right) => {
+            let mut groups = bounded_dnf(*left)?;
+            groups.extend(bounded_dnf(*right)?);
+            groups
+        }
+        BooleanExpression::And(left, right) => {
+            let left = bounded_dnf(*left)?;
+            let right = bounded_dnf(*right)?;
+            let mut groups = Vec::new();
+            for left_group in left {
+                for right_group in &right {
+                    let mut group = left_group.clone();
+                    group.extend(right_group.iter().cloned());
+                    groups.push(group);
+                }
+            }
+            groups
+        }
+    };
+    if groups.iter().map(Vec::len).sum::<usize>() > MAX_SKB_FILTER_CONDITIONS {
+        return Err(SkbFilterError::TooMany);
+    }
+    Ok(groups)
 }
 
 fn parse_clause(
@@ -260,7 +421,6 @@ mod tests {
 
     #[test]
     fn rejects_unbounded_or_ambiguous_syntax() {
-        assert!(resolve_skb_filter(Some("skb->mark == 1 || skb->mark == 2"), None).is_err());
         assert!(resolve_skb_filter(Some("skb->mark = 1"), None).is_err());
         assert!(resolve_skb_filter(Some("skb->mark == -1"), None).is_err());
         assert!(resolve_skb_filter(Some("skb->mark == 0x100000000"), None).is_err());
@@ -272,6 +432,42 @@ mod tests {
             None
         )
         .is_err());
+    }
+
+    #[test]
+    fn resolves_bounded_boolean_groups_with_parentheses() {
+        let filter = resolve_skb_filter(
+            Some("(skb->mark == 1 || skb->mark == 2) && skb->dev->ifindex > 0"),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(filter.conditions.len(), 4);
+        assert_eq!(
+            filter
+                .conditions
+                .iter()
+                .map(|condition| condition.group)
+                .collect::<Vec<_>>(),
+            [0, 0, 1, 1]
+        );
+        assert_eq!(filter.conditions[0].value, 1);
+        assert_eq!(filter.conditions[2].value, 2);
+        assert!(
+            resolve_skb_filter(
+                Some("(skb->mark == 1 || skb->mark == 2) && (skb->len > 0 || skb->hash != 0)"),
+                None
+            )
+            .is_err()
+        );
+        assert!(resolve_skb_filter(Some("(skb->mark == 1"), None).is_err());
+        assert!(resolve_skb_filter(Some("skb->mark == 1 ||"), None).is_err());
+        let deeply_nested = format!(
+            "{}skb->mark == 1{}",
+            "(".repeat(MAX_SKB_FILTER_NESTING + 1),
+            ")".repeat(MAX_SKB_FILTER_NESTING + 1)
+        );
+        assert!(resolve_skb_filter(Some(&deeply_nested), None).is_err());
     }
 
     #[test]

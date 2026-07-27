@@ -49,7 +49,8 @@ pub struct ScalarFilterCondition {
     pub value: u64,
     pub comparison: u8,
     pub signed: u8,
-    pub _pad1: [u8; 6],
+    pub group: u8,
+    pub _pad1: [u8; 5],
 }
 
 #[repr(C)]

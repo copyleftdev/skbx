@@ -43,8 +43,8 @@ split BTF. It records:
   explicitly bounded key/update-value bytes;
 - up to four target-BTF-validated scalar `skb->…` metadata projections,
   including bounded pointer chains and typed per-field read errors;
-- up to four `&&`-joined, target-BTF-validated scalar `skb->…` filter
-  comparisons, evaluated from immutable bounded access plans;
+- parenthesized `&&`/`||` target-BTF-validated scalar `skb->…` filters,
+  normalized to at most four immutable comparisons;
 - optional bounded BTF renderings of `struct sk_buff` and
   `struct skb_shared_info`, atomically correlated with their event and carrying
   explicit byte, truncation and helper-error evidence;
@@ -53,8 +53,8 @@ split BTF. It records:
   attached with one shared-map fentry tracer per program;
 - up to four target-BTF-validated `xdp->…` scalar projections alongside XDP
   packet length, interface, namespace, MTU, protocol and tuple evidence;
-- up to four `&&`-joined target-BTF-validated `xdp->…` scalar comparisons,
-  evaluated from a separate immutable XDP access plan;
+- parenthesized `&&`/`||` target-BTF-validated `xdp->…` scalar filters,
+  normalized to at most four comparisons in a separate immutable XDP plan;
 - matched XDP entry/exit pairs correlated through bounded shared state, with
   the exact numeric return code decoded as `XDP_ABORTED`, `XDP_DROP`,
   `XDP_PASS`, `XDP_TX` or `XDP_REDIRECT` while retaining unknown codes;
@@ -94,7 +94,7 @@ sudo skbx capture --probe ip_rcv \
   --output-skb-metadata 'skb->mark' \
   --output-skb-metadata 'skb->dev->ifindex' --output trace.jsonl
 sudo skbx capture --probe ip_rcv \
-  --filter-skb-expr 'skb->mark == 42 && skb->dev->ifindex > 0' \
+  --filter-skb-expr '(skb->mark == 41 || skb->mark == 42) && skb->dev->ifindex > 0' \
   --output trace.jsonl
 sudo skbx capture --probe ip_rcv --output-skb \
   --output-skb-shared-info --output trace.jsonl
@@ -102,7 +102,7 @@ sudo skbx capture --filter-trace-tc \
   --output-skb-metadata 'skb->mark' --output-skb \
   --output-skb-shared-info --output trace.jsonl
 sudo skbx capture --filter-trace-xdp \
-  --filter-xdp-expr 'xdp->frame_sz >= 1' \
+  --filter-xdp-expr '(xdp->frame_sz == 0 || xdp->frame_sz >= 1)' \
   --output-xdp-metadata 'xdp->frame_sz' \
   --output-xdp-metadata 'xdp->rxq->dev->ifindex' \
   --output trace.jsonl icmp
