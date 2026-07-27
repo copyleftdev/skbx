@@ -242,8 +242,15 @@ impl Describe {
                     name: "tc-xdp-observation",
                     status: partial,
                     requires: "BPF program enumeration, program BTF and fentry",
-                    cost: "one shared-map fentry link per eligible TC program",
-                    description: "emit exact TC program identity at entry; XDP and TC BTF structure dumps remain planned",
+                    cost: "one shared-map fentry link per eligible TC or XDP program",
+                    description: "emit exact TC/XDP program identity and entry phase; exit/action evidence and dynamic BTF structure dumps remain planned",
+                },
+                Capability {
+                    name: "btf-checked-xdp-metadata-projections",
+                    status: supported.clone(),
+                    requires: "target kernel BTF and XDP program tracing",
+                    cost: "up to four scalar reads per observed XDP entry",
+                    description: "resolve bounded xdp_buff field paths before attach and emit typed values with per-projection read errors",
                 },
                 Capability {
                     name: "route-consensus-and-outliers",
@@ -433,6 +440,13 @@ pub enum BpfProgramKind {
     Xdp,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BpfProgramPhase {
+    Entry,
+    Exit,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BpfProgramRef {
     pub id: u32,
@@ -495,6 +509,8 @@ pub struct TraceEvent {
     pub btf_dumps: Vec<BtfDump>,
     #[serde(default)]
     pub bpf_program: Option<BpfProgramRef>,
+    #[serde(default)]
+    pub bpf_program_phase: Option<BpfProgramPhase>,
     pub packet: PacketMeta,
     #[serde(default)]
     pub tuple: Option<PacketTuple>,
@@ -718,7 +734,7 @@ pub fn json_schema() -> serde_json::Value {
                     "metadata_projections": {
                         "type": "array",
                         "items": {"$ref": "#/$defs/MetadataProjection"},
-                        "maxItems": 4
+                        "maxItems": 8
                     },
                     "btf_dump_types": {
                         "type": "array",
@@ -805,6 +821,7 @@ pub fn json_schema() -> serde_json::Value {
                             {"type": "null"}
                         ]
                     },
+                    "bpf_program_phase": {"enum": ["entry", "exit", null]},
                     "packet": {"$ref": "#/$defs/PacketMeta"},
                     "tuple": {
                         "oneOf": [
@@ -921,7 +938,7 @@ pub fn json_schema() -> serde_json::Value {
                 "type": "object",
                 "required": ["expression", "type_name", "encoding", "size"],
                 "properties": {
-                    "expression": {"type": "string", "pattern": "^skb->"},
+                    "expression": {"type": "string", "pattern": "^(skb|xdp)->"},
                     "type_name": {"type": "string"},
                     "encoding": {"enum": ["unsigned", "signed", "boolean", "pointer"]},
                     "size": {"enum": [1, 2, 4, 8]}
@@ -932,7 +949,7 @@ pub fn json_schema() -> serde_json::Value {
                 "type": "object",
                 "required": ["expression", "type_name", "encoding", "value", "read_error"],
                 "properties": {
-                    "expression": {"type": "string", "pattern": "^skb->"},
+                    "expression": {"type": "string", "pattern": "^(skb|xdp)->"},
                     "type_name": {"type": "string"},
                     "encoding": {"enum": ["unsigned", "signed", "boolean", "pointer"]},
                     "value": {
@@ -1107,6 +1124,10 @@ mod tests {
                 c.name == "tc-xdp-observation" && c.status == CapabilityStatus::Partial
             })
         );
+        assert!(describe.capabilities.iter().any(|c| {
+            c.name == "btf-checked-xdp-metadata-projections"
+                && c.status == CapabilityStatus::Supported
+        }));
         assert_eq!(describe.defaults.max_events, 100_000);
     }
 

@@ -94,6 +94,8 @@ pub struct SensorConfig {
     pub tunnel_pcap_l3: CbpfProgram,
     pub metadata_count: u32,
     pub metadata: [MetadataAccess; crate::MAX_METADATA_PROJECTIONS],
+    pub xdp_metadata_count: u32,
+    pub xdp_metadata: [MetadataAccess; crate::MAX_METADATA_PROJECTIONS],
     pub scalar_filter_count: u32,
     pub scalar_filters: [ScalarFilterCondition; crate::MAX_METADATA_PROJECTIONS],
     pub output_skb_dump: u32,
@@ -173,8 +175,9 @@ impl LiveSensor {
         route_cache_entries: u32,
         attachment_mode: AttachmentMode,
         trace_tc: bool,
+        trace_xdp: bool,
     ) -> Result<Self, LiveError> {
-        if probes.is_empty() {
+        if probes.is_empty() && !trace_tc && !trace_xdp {
             return Err(LiveError::Program("probe list is empty".into()));
         }
         match attachment_mode {
@@ -185,6 +188,7 @@ impl LiveSensor {
                 route_cache_entries,
                 AttachmentMode::KprobeMulti,
                 trace_tc,
+                trace_xdp,
             ) {
                 Ok(sensor) => Ok(sensor),
                 Err(multi_error) => Self::attach_once(
@@ -194,6 +198,7 @@ impl LiveSensor {
                     route_cache_entries,
                     AttachmentMode::Kprobe,
                     trace_tc,
+                    trace_xdp,
                 )
                 .map_err(|fallback_error| {
                     LiveError::Program(format!(
@@ -208,6 +213,7 @@ impl LiveSensor {
                 route_cache_entries,
                 mode,
                 trace_tc,
+                trace_xdp,
             ),
         }
     }
@@ -219,6 +225,7 @@ impl LiveSensor {
         route_cache_entries: u32,
         mode: AttachmentMode,
         trace_tc: bool,
+        trace_xdp: bool,
     ) -> Result<Self, LiveError> {
         debug_assert_ne!(mode, AttachmentMode::Auto);
         let active_arguments: BTreeSet<u8> = probes
@@ -508,6 +515,20 @@ impl LiveSensor {
                 ));
             }
         }
+        if trace_xdp {
+            for (link, program) in attach_xdp_programs(&object, btf_path, config)? {
+                links.push(link);
+                bpf_programs.push(program);
+            }
+            if !bpf_programs
+                .iter()
+                .any(|program| program.kind == BpfProgramKind::Xdp)
+            {
+                return Err(LiveError::Program(
+                    "--filter-trace-xdp found no loaded BTF-enabled XDP programs".into(),
+                ));
+            }
+        }
         let events = map_handle(&object, "events")?;
         let telemetry = map_handle(&object, "telemetry")?;
         let stack_traces = map_handle(&object, "stack_traces")?;
@@ -668,9 +689,49 @@ fn attach_tc_programs(
     btf_path: Option<&Path>,
     config: &SensorConfig,
 ) -> Result<Vec<(Link, BpfProgramRef)>, LiveError> {
+    attach_dynamic_programs(
+        base,
+        btf_path,
+        config,
+        ProgramType::SchedCls,
+        "skbx_trace_tc",
+        crate::BPF_PROGRAM_TC,
+        BpfProgramKind::Tc,
+        "TC",
+    )
+}
+
+fn attach_xdp_programs(
+    base: &Object,
+    btf_path: Option<&Path>,
+    config: &SensorConfig,
+) -> Result<Vec<(Link, BpfProgramRef)>, LiveError> {
+    attach_dynamic_programs(
+        base,
+        btf_path,
+        config,
+        ProgramType::Xdp,
+        "skbx_trace_xdp",
+        crate::BPF_PROGRAM_XDP,
+        BpfProgramKind::Xdp,
+        "XDP",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn attach_dynamic_programs(
+    base: &Object,
+    btf_path: Option<&Path>,
+    config: &SensorConfig,
+    target_type: ProgramType,
+    tracer_name: &str,
+    raw_kind: u8,
+    kind: BpfProgramKind,
+    label: &str,
+) -> Result<Vec<(Link, BpfProgramRef)>, LiveError> {
     let options = ProgInfoQueryOptions::default().include_func_info(true);
     let targets: Vec<(ProgramInfo, String)> = ProgInfoIter::with_query_opts(options)
-        .filter(|program| program.ty == ProgramType::SchedCls)
+        .filter(|program| program.ty == target_type)
         .filter_map(|program| {
             let entry = bpf_program_entry(&program)?;
             Some((program, entry))
@@ -680,11 +741,11 @@ fn attach_tc_programs(
 
     for (target, entry) in targets {
         let target_fd = Program::fd_from_id(target.id).map_err(|error| {
-            LiveError::Program(format!("open TC BPF program {}: {error}", target.id))
+            LiveError::Program(format!("open {label} BPF program {}: {error}", target.id))
         })?;
         let mut dynamic_config = *config;
         dynamic_config.dynamic_program_id = target.id;
-        dynamic_config.dynamic_program_kind = crate::BPF_PROGRAM_TC;
+        dynamic_config.dynamic_program_kind = raw_kind;
         dynamic_config.dynamic_program_name = fixed_bytes::<16>(target.name.as_c_str().to_bytes());
         dynamic_config.dynamic_program_entry = fixed_bytes::<64>(entry.as_bytes());
 
@@ -699,14 +760,14 @@ fn attach_tc_programs(
             .map_err(|error| LiveError::Load(error.to_string()))?;
         configure_dynamic_maps(&mut open, base, &dynamic_config)?;
         for mut program in open.progs_mut() {
-            let active = program.name() == OsStr::new("skbx_trace_tc");
+            let active = program.name() == OsStr::new(tracer_name);
             program.set_autoload(active);
             if active {
                 program
                     .set_attach_target(target_fd.as_raw_fd(), Some(entry.clone()))
                     .map_err(|error| {
                         LiveError::Program(format!(
-                            "target TC BPF program {} entry {entry}: {error}",
+                            "target {label} BPF program {} entry {entry}: {error}",
                             target.id
                         ))
                     })?;
@@ -714,17 +775,17 @@ fn attach_tc_programs(
         }
         let object = open.load().map_err(|error| {
             LiveError::Load(format!(
-                "load TC tracer for program {} entry {entry}: {error}",
+                "load {label} tracer for program {} entry {entry}: {error}",
                 target.id
             ))
         })?;
         let tracer = object
             .progs_mut()
-            .find(|program| program.name() == OsStr::new("skbx_trace_tc"))
-            .ok_or_else(|| LiveError::Program("program skbx_trace_tc not found".into()))?;
+            .find(|program| program.name() == OsStr::new(tracer_name))
+            .ok_or_else(|| LiveError::Program(format!("program {tracer_name} not found")))?;
         let link = tracer.attach_trace().map_err(|error| {
             LiveError::Program(format!(
-                "attach TC tracer to program {} entry {entry}: {error}",
+                "attach {label} tracer to program {} entry {entry}: {error}",
                 target.id
             ))
         })?;
@@ -734,7 +795,7 @@ fn attach_tc_programs(
                 id: target.id,
                 name: target.name.to_string_lossy().into_owned(),
                 entry,
-                kind: BpfProgramKind::Tc,
+                kind: kind.clone(),
             },
         ));
     }

@@ -24,11 +24,11 @@ pub use filter::{
 };
 pub use metadata::{
     MAX_METADATA_ACCESS_STEPS, MAX_METADATA_PROJECTIONS, MetadataAccessPlan, MetadataError,
-    ResolvedMetadataProjection, resolve_skb_metadata,
+    ResolvedMetadataProjection, resolve_skb_metadata, resolve_xdp_metadata,
 };
 pub use plan::{
-    DEFAULT_BTF_PATH, PlanError, build_probe_plan, build_probe_plan_with_bpf_helpers,
-    build_probe_plan_with_non_skb,
+    DEFAULT_BTF_PATH, PlanError, build_dynamic_probe_plan, build_probe_plan,
+    build_probe_plan_with_bpf_helpers, build_probe_plan_with_non_skb,
 };
 pub use replay::{Explanation, ReplayError, explain, explain_file, explain_with_context, replay};
 pub use symbols::SymbolTable;

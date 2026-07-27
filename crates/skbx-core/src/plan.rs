@@ -11,6 +11,17 @@ use thiserror::Error;
 pub const DEFAULT_BTF_PATH: &str = "/sys/kernel/btf/vmlinux";
 const MAX_KPROBE_ARGUMENT: usize = 5;
 
+pub fn build_dynamic_probe_plan() -> ProbePlan {
+    ProbePlan {
+        schema: format!("{CONTRACT_VERSION}/probe-plan"),
+        kernel_release: kernel_release(),
+        probes: Vec::new(),
+        attachable: 0,
+        unavailable: 0,
+        warnings: vec!["dynamic BPF program tracing requested without kernel probes".into()],
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum PlanError {
     #[error("exact probes and --filter-func cannot be used together")]

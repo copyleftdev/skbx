@@ -2,15 +2,17 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use nix::sched::{CloneFlags, setns};
 use skbx_contract::{
-    BpfMapOperation, BpfMapOperationKind, BpfProgramKind, BpfProgramRef, BtfDump, CONTRACT_VERSION,
-    CaptureEnd, CaptureFilters, CaptureLimits, CaptureStart, Describe, Envelope, EventAssociation,
-    FunctionRef, MatchOrigin, MetadataEncoding, MetadataScalar, MetadataValue, PacketMeta,
-    PacketTuple, PresentedTimestamp, Reliability, StopReason, TimestampMode, TraceEvent,
+    BpfMapOperation, BpfMapOperationKind, BpfProgramKind, BpfProgramPhase, BpfProgramRef, BtfDump,
+    CONTRACT_VERSION, CaptureEnd, CaptureFilters, CaptureLimits, CaptureStart, Describe, Envelope,
+    EventAssociation, FunctionRef, MatchOrigin, MetadataEncoding, MetadataScalar, MetadataValue,
+    PacketMeta, PacketTuple, PresentedTimestamp, Reliability, StopReason, TimestampMode,
+    TraceEvent,
 };
 use skbx_core::{
-    BoundedMap, DEFAULT_BTF_PATH, DropReasonTable, SymbolTable, build_probe_plan_with_bpf_helpers,
-    capture_id, discover_bpf_helpers, doctor, ensure_btf_dump_support, event_handle,
-    explain_with_context, replay, resolve_skb_filter, resolve_skb_metadata,
+    BoundedMap, DEFAULT_BTF_PATH, DropReasonTable, SymbolTable, build_dynamic_probe_plan,
+    build_probe_plan_with_bpf_helpers, capture_id, discover_bpf_helpers, doctor,
+    ensure_btf_dump_support, event_handle, explain_with_context, replay, resolve_skb_filter,
+    resolve_skb_metadata, resolve_xdp_metadata,
 };
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
@@ -104,6 +106,9 @@ enum Command {
         /// Trace every currently loaded BTF-enabled TC classifier.
         #[arg(long)]
         filter_trace_tc: bool,
+        /// Trace every currently loaded BTF-enabled XDP program.
+        #[arg(long)]
+        filter_trace_xdp: bool,
         /// Read target kernel BTF from this path.
         #[arg(long)]
         kernel_btf: Option<PathBuf>,
@@ -146,6 +151,9 @@ enum Command {
         /// Emit up to four BTF-validated scalar paths such as skb->mark.
         #[arg(long = "output-skb-metadata")]
         output_skb_metadata: Vec<String>,
+        /// Emit up to four BTF-validated scalar paths such as xdp->frame_sz.
+        #[arg(long = "output-xdp-metadata")]
+        output_xdp_metadata: Vec<String>,
         /// Emit a bounded BTF rendering of struct sk_buff with each event.
         #[arg(long)]
         output_skb: bool,
@@ -343,6 +351,7 @@ fn run(cli: Cli) -> Result<u8> {
             filter_non_skb_funcs,
             filter_track_bpf_helpers,
             filter_trace_tc,
+            filter_trace_xdp,
             kernel_btf,
             kmods,
             all_kmods,
@@ -357,6 +366,7 @@ fn run(cli: Cli) -> Result<u8> {
             output_stack,
             output_tunnel,
             output_skb_metadata,
+            output_xdp_metadata,
             output_skb,
             output_skb_shared_info,
             backend,
@@ -378,6 +388,7 @@ fn run(cli: Cli) -> Result<u8> {
             &filter_non_skb_funcs,
             filter_track_bpf_helpers,
             filter_trace_tc,
+            filter_trace_xdp,
             kernel_btf.as_deref(),
             &kmods,
             all_kmods,
@@ -392,6 +403,7 @@ fn run(cli: Cli) -> Result<u8> {
             output_stack,
             output_tunnel,
             &output_skb_metadata,
+            &output_xdp_metadata,
             output_skb,
             output_skb_shared_info,
             backend,
@@ -509,6 +521,7 @@ fn capture(
     non_skb_functions: &[String],
     filter_track_bpf_helpers: bool,
     filter_trace_tc: bool,
+    filter_trace_xdp: bool,
     kernel_btf: Option<&Path>,
     modules: &[String],
     all_modules: bool,
@@ -523,6 +536,7 @@ fn capture(
     output_stack: bool,
     output_tunnel: bool,
     output_skb_metadata: &[String],
+    output_xdp_metadata: &[String],
     output_skb: bool,
     output_skb_shared_info: bool,
     backend: AttachmentBackend,
@@ -548,8 +562,11 @@ fn capture(
     if route_cache_entries == 0 {
         bail!("capture --route-cache-entries must be greater than zero");
     }
-    if filter_trace_tc && (output_skb || output_skb_shared_info) {
-        bail!("TC program tracing does not yet support BTF structure dumps");
+    if (filter_trace_tc || filter_trace_xdp) && (output_skb || output_skb_shared_info) {
+        bail!("dynamic BPF program tracing does not yet support BTF structure dumps");
+    }
+    if !output_xdp_metadata.is_empty() && !filter_trace_xdp {
+        bail!("--output-xdp-metadata requires --filter-trace-xdp");
     }
     if output_max_bytes.is_some() && output_path == Path::new("-") {
         bail!("--output-max-bytes requires a file --output path");
@@ -573,6 +590,7 @@ fn capture(
         prepare_ready_file(path)?;
     }
     let metadata_projections = resolve_skb_metadata(output_skb_metadata, kernel_btf)?;
+    let xdp_metadata_projections = resolve_xdp_metadata(output_xdp_metadata, kernel_btf)?;
     let scalar_filter = resolve_skb_filter(filter_skb_expr, kernel_btf)?;
     if output_skb || output_skb_shared_info {
         ensure_btf_dump_support(kernel_btf.unwrap_or_else(|| Path::new(DEFAULT_BTF_PATH)))?;
@@ -595,15 +613,26 @@ fn capture(
         bail!("--filter-track-skb requires at least one packet filter");
     }
     let bpf_helpers = resolve_bpf_helpers(filter_track_bpf_helpers)?;
-    let plan = build_probe_plan_with_bpf_helpers(
-        requested,
-        filter_func,
-        non_skb_functions,
-        &bpf_helpers,
-        kernel_btf,
-        modules,
-        all_modules,
-    )?;
+    let dynamic_only = (filter_trace_tc || filter_trace_xdp)
+        && requested.is_empty()
+        && filter_func.is_none()
+        && non_skb_functions.is_empty()
+        && bpf_helpers.is_empty()
+        && modules.is_empty()
+        && !all_modules;
+    let plan = if dynamic_only {
+        build_dynamic_probe_plan()
+    } else {
+        build_probe_plan_with_bpf_helpers(
+            requested,
+            filter_func,
+            non_skb_functions,
+            &bpf_helpers,
+            kernel_btf,
+            modules,
+            all_modules,
+        )?
+    };
     filters.track_stack = plan
         .probes
         .iter()
@@ -614,7 +643,7 @@ fn capture(
         .filter(|probe| probe.available)
         .cloned()
         .collect();
-    if attachments.is_empty() {
+    if attachments.is_empty() && !filter_trace_tc && !filter_trace_xdp {
         bail!("capture has no attachable probes; run `skbx plan --json`");
     }
     let probes: Vec<String> = attachments
@@ -673,6 +702,7 @@ fn capture(
             output_tunnel,
             metadata_projections: metadata_projections
                 .iter()
+                .chain(xdp_metadata_projections.iter())
                 .map(|projection| projection.descriptor.clone())
                 .collect(),
             btf_dump_types: [
@@ -715,6 +745,19 @@ fn capture(
             metadata_count: metadata_projections.len() as u32,
             metadata: std::array::from_fn(|index| {
                 metadata_projections.get(index).map_or_else(
+                    skbx_sensor::MetadataAccess::default,
+                    |projection| skbx_sensor::MetadataAccess {
+                        offsets: projection.access.offsets,
+                        dereference_mask: projection.access.dereference_mask,
+                        steps: projection.access.steps,
+                        size: projection.access.size,
+                        _pad: 0,
+                    },
+                )
+            }),
+            xdp_metadata_count: xdp_metadata_projections.len() as u32,
+            xdp_metadata: std::array::from_fn(|index| {
+                xdp_metadata_projections.get(index).map_or_else(
                     skbx_sensor::MetadataAccess::default,
                     |projection| skbx_sensor::MetadataAccess {
                         offsets: projection.access.offsets,
@@ -787,6 +830,7 @@ fn capture(
                 AttachmentBackend::KprobeMulti => skbx_sensor::AttachmentMode::KprobeMulti,
             },
             filter_trace_tc,
+            filter_trace_xdp,
         )?;
         start.attachment_backend = sensor.attachment_backend().into();
         start.identity_hooks = sensor.identity_hooks().to_vec();
@@ -858,6 +902,7 @@ fn capture(
                     },
                     EventEnrichment {
                         metadata_projections: &metadata_projections,
+                        xdp_metadata_projections: &xdp_metadata_projections,
                         symbols: &symbols,
                         drop_reasons: &drop_reasons,
                         stack: &stack,
@@ -1113,6 +1158,7 @@ fn parse_u32(value: &str) -> Result<u32> {
 
 struct EventEnrichment<'a> {
     metadata_projections: &'a [skbx_core::ResolvedMetadataProjection],
+    xdp_metadata_projections: &'a [skbx_core::ResolvedMetadataProjection],
     symbols: &'a SymbolTable,
     drop_reasons: &'a DropReasonTable,
     stack: &'a [u64],
@@ -1133,6 +1179,21 @@ fn convert_event(
     components: RawEventComponents,
     enrichment: EventEnrichment<'_>,
 ) -> TraceEvent {
+    let metadata_projections = if components
+        .bpf_program
+        .is_some_and(|program| program.kind == skbx_sensor::BPF_PROGRAM_XDP)
+    {
+        enrichment.xdp_metadata_projections
+    } else {
+        enrichment.metadata_projections
+    };
+    let bpf_program_phase = components.bpf_program.map(|program| {
+        if program.phase == skbx_sensor::BPF_PROGRAM_PHASE_EXIT {
+            BpfProgramPhase::Exit
+        } else {
+            BpfProgramPhase::Entry
+        }
+    });
     let function_symbol = enrichment
         .symbols
         .resolve(raw.function_ip)
@@ -1193,9 +1254,10 @@ fn convert_event(
         ],
         drop_reason,
         bpf_map: components.map.map(convert_bpf_map),
-        metadata: convert_metadata(components.metadata, enrichment.metadata_projections),
+        metadata: convert_metadata(components.metadata, metadata_projections),
         btf_dumps: convert_btf_dumps(components.btf_dumps),
         bpf_program: components.bpf_program.map(convert_bpf_program),
+        bpf_program_phase,
         packet: PacketMeta {
             len: raw.len,
             protocol: u16::from_be(raw.protocol),
@@ -1610,6 +1672,7 @@ mod tests {
                 bpf_program: Some(skbx_sensor::RawBpfProgram {
                     id: 42,
                     kind: skbx_sensor::BPF_PROGRAM_TC,
+                    phase: skbx_sensor::BPF_PROGRAM_PHASE_ENTRY,
                     name,
                     entry,
                     ..Default::default()
@@ -1618,6 +1681,7 @@ mod tests {
             },
             EventEnrichment {
                 metadata_projections: &[],
+                xdp_metadata_projections: &[],
                 symbols: &SymbolTable::default(),
                 drop_reasons: &DropReasonTable::default(),
                 stack: &[],
@@ -1637,6 +1701,7 @@ mod tests {
             event_display_name(&event),
             "bpf:tc:42:cls_test/classify_packet"
         );
+        assert_eq!(event.bpf_program_phase, Some(BpfProgramPhase::Entry));
     }
 
     #[test]
@@ -1684,6 +1749,7 @@ mod tests {
             RawEventComponents::default(),
             EventEnrichment {
                 metadata_projections: &[],
+                xdp_metadata_projections: &[],
                 symbols: &symbols,
                 drop_reasons: &drop_reasons,
                 stack: &[0x1010],
@@ -1696,6 +1762,7 @@ mod tests {
             RawEventComponents::default(),
             EventEnrichment {
                 metadata_projections: &[],
+                xdp_metadata_projections: &[],
                 symbols: &symbols,
                 drop_reasons: &drop_reasons,
                 stack: &[0x1010],
@@ -1727,6 +1794,7 @@ mod tests {
             RawEventComponents::default(),
             EventEnrichment {
                 metadata_projections: &[],
+                xdp_metadata_projections: &[],
                 symbols: &symbols,
                 drop_reasons: &drop_reasons,
                 stack: &[],
@@ -1906,6 +1974,7 @@ mod tests {
             RawEventComponents::default(),
             EventEnrichment {
                 metadata_projections: &[],
+                xdp_metadata_projections: &[],
                 symbols: &SymbolTable::default(),
                 drop_reasons: &DropReasonTable::default(),
                 stack: &[],

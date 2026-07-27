@@ -32,6 +32,8 @@ pub const BTF_RECORD_COMPONENT_METADATA: u8 = 1 << 1;
 pub const MAX_BTF_DUMP_BYTES: usize = 4092;
 pub const BPF_PROGRAM_TC: u8 = 1;
 pub const BPF_PROGRAM_XDP: u8 = 2;
+pub const BPF_PROGRAM_PHASE_ENTRY: u8 = 1;
+pub const BPF_PROGRAM_PHASE_EXIT: u8 = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -541,6 +543,7 @@ mod tests {
         let mut program = RawBpfProgram {
             id: 42,
             kind: BPF_PROGRAM_TC,
+            phase: BPF_PROGRAM_PHASE_ENTRY,
             ..Default::default()
         };
         program.name[..8].copy_from_slice(b"cls_test");
@@ -568,6 +571,7 @@ mod tests {
         assert!(dumps.is_none());
         let program = program.expect("program");
         assert_eq!(program.id, 42);
+        assert_eq!(program.phase, BPF_PROGRAM_PHASE_ENTRY);
         assert_eq!(program.name_string(), "cls_test");
         assert_eq!(program.entry_string(), "classify_packet");
     }

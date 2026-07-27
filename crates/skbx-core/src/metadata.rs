@@ -22,12 +22,12 @@ pub struct ResolvedMetadataProjection {
 
 #[derive(Debug, Error)]
 pub enum MetadataError {
-    #[error("at most {MAX_METADATA_PROJECTIONS} SKB metadata projections are supported")]
+    #[error("at most {MAX_METADATA_PROJECTIONS} metadata projections are supported per context")]
     TooMany,
     #[error("load kernel BTF {path}: {error}")]
     LoadBtf { path: PathBuf, error: String },
-    #[error("kernel BTF has no struct sk_buff definition")]
-    MissingSkb,
+    #[error("kernel BTF has no struct {0} definition")]
+    MissingRoot(&'static str),
     #[error("invalid metadata expression {expression:?}: {reason}")]
     InvalidExpression { expression: String, reason: String },
     #[error("resolve metadata expression {expression:?}: {reason}")]
@@ -44,6 +44,22 @@ pub fn resolve_skb_metadata(
     expressions: &[String],
     btf_path: Option<&Path>,
 ) -> Result<Vec<ResolvedMetadataProjection>, MetadataError> {
+    resolve_metadata(expressions, btf_path, "skb", "sk_buff")
+}
+
+pub fn resolve_xdp_metadata(
+    expressions: &[String],
+    btf_path: Option<&Path>,
+) -> Result<Vec<ResolvedMetadataProjection>, MetadataError> {
+    resolve_metadata(expressions, btf_path, "xdp", "xdp_buff")
+}
+
+fn resolve_metadata(
+    expressions: &[String],
+    btf_path: Option<&Path>,
+    expression_root: &'static str,
+    type_name: &'static str,
+) -> Result<Vec<ResolvedMetadataProjection>, MetadataError> {
     if expressions.len() > MAX_METADATA_PROJECTIONS {
         return Err(MetadataError::TooMany);
     }
@@ -53,9 +69,9 @@ pub fn resolve_skb_metadata(
         error: error.to_string(),
     })?;
     let root = btf
-        .resolve_types_by_name("sk_buff")
+        .resolve_types_by_name(type_name)
         .map_err(|error| MetadataError::Resolve {
-            expression: "skb".into(),
+            expression: expression_root.into(),
             reason: error.to_string(),
         })?
         .into_iter()
@@ -63,11 +79,11 @@ pub fn resolve_skb_metadata(
             Ok(Type::Struct(root)) => Some(root),
             _ => None,
         })
-        .ok_or(MetadataError::MissingSkb)?;
+        .ok_or(MetadataError::MissingRoot(type_name))?;
 
     expressions
         .iter()
-        .map(|expression| resolve_one(&btf, &root, expression))
+        .map(|expression| resolve_one(&btf, &root, expression, expression_root, type_name))
         .collect()
 }
 
@@ -75,8 +91,10 @@ fn resolve_one(
     btf: &Btf,
     root: &btf_rs::Struct,
     expression: &str,
+    expression_root: &'static str,
+    type_name: &'static str,
 ) -> Result<ResolvedMetadataProjection, MetadataError> {
-    let components = parse_expression(expression)?;
+    let components = parse_expression(expression, expression_root, type_name)?;
     if components.len() > MAX_METADATA_ACCESS_STEPS {
         return Err(resolve_error(
             expression,
@@ -283,10 +301,17 @@ fn strip_modifiers(btf: &Btf, mut value: Type) -> Result<Type, btf_rs::Error> {
     }
 }
 
-fn parse_expression(expression: &str) -> Result<Vec<(Connector, String)>, MetadataError> {
-    let mut remaining = expression
-        .strip_prefix("skb")
-        .ok_or_else(|| invalid_error(expression, "expression must begin with skb"))?;
+fn parse_expression(
+    expression: &str,
+    expression_root: &'static str,
+    type_name: &'static str,
+) -> Result<Vec<(Connector, String)>, MetadataError> {
+    let mut remaining = expression.strip_prefix(expression_root).ok_or_else(|| {
+        invalid_error(
+            expression,
+            format!("expression must begin with {expression_root}"),
+        )
+    })?;
     let mut components = Vec::new();
     while !remaining.is_empty() {
         let (connector, rest) = if let Some(rest) = remaining.strip_prefix("->") {
@@ -302,7 +327,7 @@ fn parse_expression(expression: &str) -> Result<Vec<(Connector, String)>, Metada
         if components.is_empty() && connector != Connector::Arrow {
             return Err(invalid_error(
                 expression,
-                "the first sk_buff field must be accessed with ->",
+                format!("the first {type_name} field must be accessed with ->"),
             ));
         }
         let end = rest
@@ -350,16 +375,16 @@ mod tests {
     #[test]
     fn parses_only_bounded_c_style_field_paths() {
         assert_eq!(
-            parse_expression("skb->dev->ifindex").unwrap(),
+            parse_expression("skb->dev->ifindex", "skb", "sk_buff").unwrap(),
             [
                 (Connector::Arrow, "dev".into()),
                 (Connector::Arrow, "ifindex".into())
             ]
         );
-        assert!(parse_expression("skb.mark").is_err());
-        assert!(parse_expression("skb->mark == 1").is_err());
-        assert!(parse_expression("other->mark").is_err());
-        assert!(parse_expression("skb->").is_err());
+        assert!(parse_expression("skb.mark", "skb", "sk_buff").is_err());
+        assert!(parse_expression("skb->mark == 1", "skb", "sk_buff").is_err());
+        assert!(parse_expression("other->mark", "skb", "sk_buff").is_err());
+        assert!(parse_expression("skb->", "skb", "sk_buff").is_err());
     }
 
     #[test]
@@ -388,5 +413,18 @@ mod tests {
         assert!(resolve_skb_metadata(&["skb->definitely_absent".into()], None).is_err());
         assert!(resolve_skb_metadata(&["skb->cb".into()], None).is_err());
         assert!(resolve_skb_metadata(&vec!["skb->mark".into(); 5], None).is_err());
+    }
+
+    #[test]
+    fn resolves_host_xdp_scalars_and_pointer_chains() {
+        let projections = resolve_xdp_metadata(
+            &["xdp->frame_sz".into(), "xdp->rxq->dev->ifindex".into()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(projections.len(), 2);
+        assert_eq!(projections[0].descriptor.expression, "xdp->frame_sz");
+        assert_eq!(projections[1].access.steps, 3);
+        assert_eq!(projections[1].access.dereference_mask, 0b11);
     }
 }

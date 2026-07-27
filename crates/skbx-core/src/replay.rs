@@ -572,6 +572,7 @@ mod tests {
                 entry: "classify_packet".into(),
                 kind: BpfProgramKind::Tc,
             }),
+            bpf_program_phase: Some(skbx_contract::BpfProgramPhase::Entry),
             packet: PacketMeta::default(),
             tuple: None,
             tunnel_tuple: None,
@@ -632,6 +633,7 @@ mod tests {
             metadata: Vec::new(),
             btf_dumps: Vec::new(),
             bpf_program: None,
+            bpf_program_phase: None,
             packet: PacketMeta {
                 len: 64,
                 protocol: 0x800,
@@ -801,6 +803,7 @@ mod tests {
                 metadata: Vec::new(),
                 btf_dumps: Vec::new(),
                 bpf_program: None,
+                bpf_program_phase: None,
                 packet: PacketMeta {
                     len: 64,
                     protocol: 0x0800,

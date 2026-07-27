@@ -49,8 +49,10 @@ split BTF. It records:
   `struct skb_shared_info`, atomically correlated with their event and carrying
   explicit byte, truncation and helper-error evidence;
 - exact entry observations for every currently loaded BTF-enabled TC
-  classifier, discovered through the kernel program API and attached with one
-  shared-map fentry tracer per program;
+  classifier or XDP program, discovered through the kernel program API and
+  attached with one shared-map fentry tracer per program;
+- up to four target-BTF-validated `xdp->…` scalar projections alongside XDP
+  packet length, interface, namespace, MTU, protocol and tuple evidence;
 - caller, network namespace, MTU and the SKB control buffer;
 - BTF-decoded SKB drop reasons on supported drop functions;
 - kernel ring-buffer reserve failures.
@@ -63,9 +65,9 @@ filter, a tracked identity, or a stack association. Named interfaces are
 resolved in the namespace selected by `--filter-netns`, and device-less
 output SKBs fall back to their socket namespace.
 
-It does **not yet** claim full `pwru` parity. XDP program tracing, TC structure
-dumps, unrestricted expression syntax and XDP metadata projections remain
-explicit gaps.
+It does **not yet** claim full `pwru` parity. Dynamic program exit/action
+evidence, TC/XDP structure dumps, unrestricted expression syntax and universal
+XDP-to-SKB lineage across copying drivers remain explicit gaps.
 
 ## Commands
 
@@ -89,8 +91,12 @@ sudo skbx capture --probe ip_rcv \
   --output trace.jsonl
 sudo skbx capture --probe ip_rcv --output-skb \
   --output-skb-shared-info --output trace.jsonl
-sudo skbx capture --probe tcf_classify --filter-trace-tc \
+sudo skbx capture --filter-trace-tc \
   --output-skb-metadata 'skb->mark' --output trace.jsonl
+sudo skbx capture --filter-trace-xdp \
+  --output-xdp-metadata 'xdp->frame_sz' \
+  --output-xdp-metadata 'xdp->rxq->dev->ifindex' \
+  --output trace.jsonl icmp
 sudo skbx capture --probe ip_rcv --output trace.jsonl \
   --output-max-bytes 104857600 --output-max-backups 4 --output-compress
 skbx replay trace.jsonl --format json
@@ -161,7 +167,10 @@ scripts/live-btf-dump-test.sh target/debug/skbx` proves atomic `sk_buff` and
 shared-info renderings alongside an existing metadata projection. `sudo
 scripts/live-tc-program-test.sh target/debug/skbx` loads an isolated TC
 classifier and proves BTF entry discovery, dynamic fentry attachment, exact
-program identity and read-clean SKB metadata.
+program identity and read-clean SKB metadata. `sudo
+scripts/live-xdp-program-test.sh target/debug/skbx` proves dynamic-only XDP
+attachment with exact entry-phase identity, L2 pcap filtering, tuple decoding
+and target-BTF-checked `xdp_buff` metadata.
 
 ## Architecture
 

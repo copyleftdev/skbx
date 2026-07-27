@@ -62,6 +62,7 @@
 #define BTF_RECORD_COMPONENT_METADATA (1u << 1)
 #define BPF_PROGRAM_TC 1
 #define BPF_PROGRAM_XDP 2
+#define BPF_PROGRAM_PHASE_ENTRY 1
 #define FILTER_COMPARE_EQUAL 1
 #define FILTER_COMPARE_NOT_EQUAL 2
 #define FILTER_COMPARE_LESS 3
@@ -71,6 +72,13 @@
 
 #define ETH_P_IP   0x0800
 #define ETH_P_IPV6 0x86dd
+#define ETH_P_8021Q 0x8100
+#define ETH_P_8021AD 0x88a8
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#define CPU_TO_BE16(value) __builtin_bswap16(value)
+#else
+#define CPU_TO_BE16(value) (value)
+#endif
 #define IPPROTO_ICMP 1
 #define IPPROTO_TCP 6
 #define IPPROTO_UDP 17
@@ -316,6 +324,8 @@ struct skbx_config {
     struct cbpf_program tunnel_pcap_l3;
     __u32 metadata_count;
     struct metadata_access metadata[MAX_METADATA_PROJECTIONS];
+    __u32 xdp_metadata_count;
+    struct metadata_access xdp_metadata[MAX_METADATA_PROJECTIONS];
     __u32 scalar_filter_count;
     struct scalar_filter_condition scalar_filters[MAX_METADATA_PROJECTIONS];
     __u32 output_skb_dump;
@@ -827,13 +837,13 @@ static __always_inline int tunnel_pcap_filter_match(struct sk_buff *skb)
 }
 
 static __always_inline int read_scalar_access(
-    struct sk_buff *skb, const volatile struct metadata_access *access,
+    void *root, const volatile struct metadata_access *access,
     __u64 *value)
 {
-    void *cursor = skb;
+    void *cursor = root;
 
     *value = 0;
-    if (!skb || !access->steps ||
+    if (!root || !access->steps ||
         access->steps > MAX_METADATA_ACCESS_STEPS)
         return -1;
 #pragma clang loop unroll(full)
@@ -1093,6 +1103,182 @@ static __always_inline int should_trace(struct sk_buff *skb,
     return matched;
 }
 
+static __always_inline int xdp_packet_bounds(struct xdp_buff *xdp,
+                                             unsigned char **data,
+                                             __u32 *len)
+{
+    unsigned char *end = 0;
+
+    *data = 0;
+    *len = 0;
+    if (!xdp ||
+        bpf_core_read(data, sizeof(*data), &xdp->data) || !*data ||
+        bpf_core_read(&end, sizeof(end), &xdp->data_end) || !end ||
+        end < *data)
+        return -1;
+    *len = end - *data;
+    return 0;
+}
+
+static __always_inline int xdp_filter_match(struct xdp_buff *xdp)
+{
+    unsigned char *data = 0;
+    __u32 len = 0;
+
+    if (!CONFIG.pcap_l2.len)
+        return 1;
+    if (xdp_packet_bounds(xdp, &data, &len))
+        return 0;
+    return run_cbpf(&CONFIG.pcap_l2, data, len);
+}
+
+static __always_inline int configured_xdp_filter_match(
+    struct xdp_buff *xdp)
+{
+    struct xdp_rxq_info *rxq = 0;
+    struct net_device *device = 0;
+    struct net *net = 0;
+    __u32 ifindex = 0;
+    __u32 netns = 0;
+
+    if (!CONFIG.filter_ifindex && !CONFIG.filter_netns &&
+        !CONFIG.pcap_l2.len)
+        return 1;
+    if (!xdp || !xdp_filter_match(xdp))
+        goto filtered;
+    if (!CONFIG.filter_ifindex && !CONFIG.filter_netns)
+        return 1;
+    if (bpf_core_read(&rxq, sizeof(rxq), &xdp->rxq) || !rxq ||
+        bpf_core_read(&device, sizeof(device), &rxq->dev) || !device)
+        goto filtered;
+    if (CONFIG.filter_ifindex) {
+        if (bpf_core_read(&ifindex, sizeof(ifindex), &device->ifindex))
+            return -1;
+        if (ifindex != CONFIG.filter_ifindex)
+            goto filtered;
+    }
+    if (CONFIG.filter_netns) {
+        if (bpf_core_read(&net, sizeof(net), &device->nd_net.net) ||
+            !net ||
+            bpf_core_read(&netns, sizeof(netns), &net->ns.inum))
+            return -1;
+        if (netns != CONFIG.filter_netns)
+            goto filtered;
+    }
+    return 1;
+
+filtered:
+    return 0;
+}
+
+static __always_inline int should_trace_xdp(struct xdp_buff *xdp,
+                                            struct kernel_stats *counters,
+                                            __u64 *identity)
+{
+    unsigned char *hard_start = 0;
+    __u64 hard_start_key = 0;
+    __u64 *tracked = 0;
+    int matched;
+
+    *identity = (__u64)xdp;
+    if (CONFIG.track_skb && xdp &&
+        !bpf_core_read(&hard_start, sizeof(hard_start),
+                       &xdp->data_hard_start) && hard_start) {
+        hard_start_key = (__u64)hard_start;
+        tracked = bpf_map_lookup_elem(&skb_data_lineages,
+                                      &hard_start_key);
+        if (tracked) {
+            *identity = *tracked;
+            return 2;
+        }
+    }
+
+    matched = configured_xdp_filter_match(xdp);
+    if (matched < 0) {
+        if (counters)
+            counters->read_failures++;
+        matched = 0;
+    }
+    if (matched && CONFIG.track_skb && hard_start_key) {
+        __u32 zero = 0;
+        __u64 *sequence =
+            bpf_map_lookup_elem(&lineage_sequence, &zero);
+        __u64 next = sequence ?
+            __sync_fetch_and_add(sequence, 1) + 1 : (__u64)xdp;
+
+        *identity = next;
+        bpf_map_update_elem(&skb_data_lineages, &hard_start_key,
+                            &next, 0);
+    }
+    if (!matched && counters)
+        counters->filtered_events++;
+    return matched;
+}
+
+static __always_inline void fill_xdp_fields(
+    struct xdp_buff *xdp, struct skbx_trace_event *event,
+    struct kernel_stats *counters)
+{
+    unsigned char *data = 0;
+    struct xdp_rxq_info *rxq = 0;
+    struct net_device *device = 0;
+    struct net *net = 0;
+    __u32 len = 0;
+    __u16 l3_offset = 14;
+    __u16 protocol = 0;
+
+    if (xdp_packet_bounds(xdp, &data, &len)) {
+        event->read_status |= READ_LEN_FAILED | READ_PROTOCOL_FAILED |
+                              READ_TUPLE_FAILED;
+    } else {
+        event->len = len;
+        if (len < 14 ||
+            bpf_probe_read_kernel(&protocol, sizeof(protocol), data + 12)) {
+            event->read_status |= READ_PROTOCOL_FAILED |
+                                  READ_TUPLE_FAILED;
+        } else {
+            event->protocol = protocol;
+            if (protocol == CPU_TO_BE16(ETH_P_8021Q) ||
+                protocol == CPU_TO_BE16(ETH_P_8021AD)) {
+                if (len < 18 ||
+                    bpf_probe_read_kernel(&protocol, sizeof(protocol),
+                                          data + 16)) {
+                    event->read_status |= READ_PROTOCOL_FAILED |
+                                          READ_TUPLE_FAILED;
+                    goto device;
+                }
+                event->protocol = protocol;
+                l3_offset = 18;
+            }
+            if ((protocol == CPU_TO_BE16(ETH_P_IP) ||
+                 protocol == CPU_TO_BE16(ETH_P_IPV6)) &&
+                read_tuple_at(data, len, l3_offset, &event->tuple))
+                event->read_status |= READ_TUPLE_FAILED;
+        }
+    }
+
+device:
+    if (!xdp ||
+        bpf_core_read(&rxq, sizeof(rxq), &xdp->rxq) || !rxq ||
+        bpf_core_read(&device, sizeof(device), &rxq->dev) || !device) {
+        event->read_status |= READ_DEVICE_FAILED;
+    } else {
+        if (bpf_core_read(&event->ifindex, sizeof(event->ifindex),
+                          &device->ifindex))
+            event->read_status |= READ_IFINDEX_FAILED;
+        if (bpf_core_read(&event->mtu, sizeof(event->mtu),
+                          &device->mtu))
+            event->read_status |= READ_MTU_FAILED;
+        if (bpf_core_read(&net, sizeof(net), &device->nd_net.net) ||
+            !net ||
+            bpf_core_read(&event->netns, sizeof(event->netns),
+                          &net->ns.inum))
+            event->read_status |= READ_NETNS_FAILED;
+    }
+    if (event->read_status && counters)
+        counters->read_failures++;
+}
+
 static __always_inline __u64 get_stack_anchor(struct pt_regs *ctx)
 {
     __u64 frame = PT_REGS_FP(ctx);
@@ -1204,28 +1390,45 @@ static __always_inline void fill_trace_event(
     fill_skb_fields(skb, event, counters);
 }
 
-static __always_inline void fill_metadata(struct sk_buff *skb,
-                                          struct skbx_metadata *metadata,
-                                          struct kernel_stats *counters)
+static __always_inline void fill_metadata_from(
+    void *root, const volatile struct metadata_access *accesses,
+    __u32 count, struct skbx_metadata *metadata,
+    struct kernel_stats *counters)
 {
     __builtin_memset(metadata, 0, sizeof(*metadata));
-    metadata->count = CONFIG.metadata_count < MAX_METADATA_PROJECTIONS ?
-        CONFIG.metadata_count : MAX_METADATA_PROJECTIONS;
+    metadata->count = count < MAX_METADATA_PROJECTIONS ?
+        count : MAX_METADATA_PROJECTIONS;
 
 #pragma clang loop unroll(full)
     for (int projection = 0; projection < MAX_METADATA_PROJECTIONS;
          projection++) {
         const volatile struct metadata_access *access =
-            &CONFIG.metadata[projection];
+            &accesses[projection];
 
         if (projection >= metadata->count)
             break;
-        if (read_scalar_access(skb, access,
+        if (read_scalar_access(root, access,
                                &metadata->values[projection]))
             metadata->read_status |= 1u << projection;
     }
     if (metadata->read_status && counters)
         counters->read_failures++;
+}
+
+static __always_inline void fill_metadata(struct sk_buff *skb,
+                                          struct skbx_metadata *metadata,
+                                          struct kernel_stats *counters)
+{
+    fill_metadata_from(skb, CONFIG.metadata, CONFIG.metadata_count,
+                       metadata, counters);
+}
+
+static __always_inline void fill_xdp_metadata(
+    struct xdp_buff *xdp, struct skbx_metadata *metadata,
+    struct kernel_stats *counters)
+{
+    fill_metadata_from(xdp, CONFIG.xdp_metadata,
+                       CONFIG.xdp_metadata_count, metadata, counters);
 }
 
 static __always_inline void fill_btf_dumps(struct sk_buff *skb,
@@ -1368,6 +1571,20 @@ DEFINE_SKB_PROBE(3)
 DEFINE_SKB_PROBE(4)
 DEFINE_SKB_PROBE(5)
 
+static __always_inline void fill_program_ref(
+    struct skbx_bpf_program *program)
+{
+    program->id = CONFIG.dynamic_program_id;
+    program->kind = CONFIG.dynamic_program_kind;
+    program->phase = BPF_PROGRAM_PHASE_ENTRY;
+#pragma unroll
+    for (int i = 0; i < sizeof(program->name); i++)
+        program->name[i] = CONFIG.dynamic_program_name[i];
+#pragma unroll
+    for (int i = 0; i < sizeof(program->entry); i++)
+        program->entry[i] = CONFIG.dynamic_program_entry[i];
+}
+
 static __always_inline void fill_program_trace_event(
     void *ctx, struct sk_buff *skb, int match, __u64 identity,
     struct skbx_program_trace_event *record,
@@ -1389,14 +1606,7 @@ static __always_inline void fill_program_trace_event(
     if (CONFIG.output_stack)
         record->event.stack_id = bpf_get_stackid(ctx, &stack_traces, 0);
     fill_skb_fields(skb, &record->event, counters);
-    record->program.id = CONFIG.dynamic_program_id;
-    record->program.kind = CONFIG.dynamic_program_kind;
-#pragma unroll
-    for (int i = 0; i < sizeof(record->program.name); i++)
-        record->program.name[i] = CONFIG.dynamic_program_name[i];
-#pragma unroll
-    for (int i = 0; i < sizeof(record->program.entry); i++)
-        record->program.entry[i] = CONFIG.dynamic_program_entry[i];
+    fill_program_ref(&record->program);
 }
 
 SEC("fentry")
@@ -1433,6 +1643,68 @@ int skbx_trace_tc(__u64 *ctx)
         }
         fill_program_trace_event(ctx, skb, match, identity, record,
                                  counters);
+        bpf_ringbuf_submit(record, 0);
+    }
+    return 0;
+}
+
+static __always_inline void fill_xdp_program_trace_event(
+    void *ctx, struct xdp_buff *xdp, int match, __u64 identity,
+    struct skbx_program_trace_event *record,
+    struct kernel_stats *counters)
+{
+    __builtin_memset(record, 0, sizeof(*record));
+    record->event.stack_id = -1;
+    record->event.association = ASSOCIATION_DIRECT;
+    record->event.match_origin =
+        match == 2 ? MATCH_TRACKED_SKB : MATCH_FILTER;
+    record->event.timestamp_ns = bpf_ktime_get_ns();
+    record->event.skb_addr = (__u64)xdp;
+    record->event.identity = identity;
+    record->event.pid = bpf_get_current_pid_tgid() >> 32;
+    record->event.cpu = bpf_get_smp_processor_id();
+    bpf_get_current_comm(record->event.command,
+                         sizeof(record->event.command));
+    if (CONFIG.output_stack)
+        record->event.stack_id = bpf_get_stackid(ctx, &stack_traces, 0);
+    fill_xdp_fields(xdp, &record->event, counters);
+    fill_program_ref(&record->program);
+}
+
+SEC("fentry")
+int skbx_trace_xdp(__u64 *ctx)
+{
+    struct xdp_buff *xdp = (struct xdp_buff *)ctx[0];
+    struct kernel_stats *counters = stats();
+    __u64 identity = (__u64)xdp;
+    int match = should_trace_xdp(xdp, counters, &identity);
+
+    if (!match)
+        return 0;
+    if (CONFIG.xdp_metadata_count) {
+        struct skbx_program_metadata_trace_event *record =
+            bpf_ringbuf_reserve(&events, sizeof(*record), 0);
+
+        if (!record) {
+            if (counters)
+                counters->reserve_failures++;
+            return 0;
+        }
+        fill_xdp_program_trace_event(ctx, xdp, match, identity,
+                                     &record->program, counters);
+        fill_xdp_metadata(xdp, &record->metadata, counters);
+        bpf_ringbuf_submit(record, 0);
+    } else {
+        struct skbx_program_trace_event *record =
+            bpf_ringbuf_reserve(&events, sizeof(*record), 0);
+
+        if (!record) {
+            if (counters)
+                counters->reserve_failures++;
+            return 0;
+        }
+        fill_xdp_program_trace_event(ctx, xdp, match, identity,
+                                     record, counters);
         bpf_ringbuf_submit(record, 0);
     }
     return 0;
