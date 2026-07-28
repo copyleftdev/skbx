@@ -1,9 +1,13 @@
-.PHONY: check build benchmark live-tunnel live-netns live-stack live-stack-lifetime live-bpf-helper live-tc-program live-xdp-program live-skb-replacement live-xdp-lineage live-metadata live-skb-filter live-btf-dump live-text-output live-rotation
+.PHONY: check agent-plugin-check build benchmark live-tunnel live-netns live-stack live-stack-lifetime live-bpf-helper live-tc-program live-xdp-program live-skb-replacement live-xdp-lineage live-metadata live-skb-filter live-btf-dump live-text-output live-rotation
 
 check:
+	python3 scripts/validate-agent-plugin.py
 	cargo fmt --all -- --check
 	cargo test --workspace --all-features --locked --offline
 	cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings
+
+agent-plugin-check:
+	python3 scripts/validate-agent-plugin.py
 
 build:
 	cargo build --release --locked --offline

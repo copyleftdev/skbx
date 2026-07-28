@@ -1,0 +1,4 @@
+interface:
+  display_name: "Use skbx"
+  short_description: "Trace Linux packet paths with evidence"
+  default_prompt: "Use $use-skbx to diagnose this Linux packet-path problem with bounded evidence."

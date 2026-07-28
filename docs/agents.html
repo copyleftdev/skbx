@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#12150f">
+  <meta name="description" content="Install the skbx packet-evidence plugin for Codex or Claude Code from one GitHub marketplace, then give your agent a safe Linux packet-tracing workflow.">
+  <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+  <meta name="author" content="copyleftdev">
+  <meta property="og:title" content="Install skbx for Codex and Claude Code">
+  <meta property="og:description" content="One GitHub source, two verified plugin manifests, and one rule: AI explains packet evidence—it never invents it.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://copyleftdev.github.io/skbx/agents.html">
+  <meta property="og:site_name" content="skbx">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:image" content="https://copyleftdev.github.io/skbx/assets/skbx-social-card.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="skbx packet flight recorder route through Linux kernel hooks">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Install skbx for Codex and Claude Code">
+  <meta name="twitter:description" content="Give your coding agent a bounded, evidence-first Linux packet tracing workflow.">
+  <meta name="twitter:image" content="https://copyleftdev.github.io/skbx/assets/skbx-social-card.png">
+  <meta name="twitter:image:alt" content="skbx packet flight recorder route through Linux kernel hooks">
+  <link rel="canonical" href="https://copyleftdev.github.io/skbx/agents.html">
+  <link rel="icon" href="assets/skbx-flight-mark.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Recursive:slnt,wght@-15..0,300..1000&amp;family=Source+Serif+4:opsz,wght@8..60,300..900&amp;display=swap">
+  <link href="https://fonts.googleapis.com/css2?family=Recursive:slnt,wght@-15..0,300..1000&amp;family=Source+Serif+4:opsz,wght@8..60,300..900&amp;display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+  <noscript><link href="https://fonts.googleapis.com/css2?family=Recursive:slnt,wght@-15..0,300..1000&amp;family=Source+Serif+4:opsz,wght@8..60,300..900&amp;display=swap" rel="stylesheet"></noscript>
+  <link rel="stylesheet" href="styles.css">
+  <script src="site.js" defer></script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebPage",
+        "@id": "https://copyleftdev.github.io/skbx/agents.html#webpage",
+        "url": "https://copyleftdev.github.io/skbx/agents.html",
+        "name": "Install skbx for Codex and Claude Code",
+        "description": "Official onboarding commands for installing the skbx evidence-first Linux packet tracing plugin from its GitHub marketplace.",
+        "inLanguage": "en",
+        "isPartOf": {
+          "@id": "https://copyleftdev.github.io/skbx/#webpage"
+        },
+        "about": {
+          "@id": "https://copyleftdev.github.io/skbx/agents.html#plugin"
+        }
+      },
+      {
+        "@type": ["SoftwareApplication", "SoftwareSourceCode"],
+        "@id": "https://copyleftdev.github.io/skbx/agents.html#plugin",
+        "name": "skbx agent plugin",
+        "softwareVersion": "0.1.0",
+        "applicationCategory": "DeveloperApplication",
+        "applicationSubCategory": "Agent skill for Linux packet-path investigation",
+        "operatingSystem": "Codex CLI or Claude Code",
+        "codeRepository": "https://github.com/copyleftdev/skbx",
+        "downloadUrl": "https://github.com/copyleftdev/skbx",
+        "installUrl": "https://copyleftdev.github.io/skbx/agents.html#install",
+        "license": "https://github.com/copyleftdev/skbx/blob/main/LICENSE",
+        "isAccessibleForFree": true,
+        "description": "A shared agent skill packaged with native Codex and Claude Code plugin manifests. It guides safe skbx installation, preflight, bounded capture, reliability review, replay, and evidence explanation.",
+        "featureList": [
+          "Codex marketplace manifest",
+          "Claude Code marketplace manifest",
+          "Shared open-format agent skill",
+          "Read-only host preflight before installation or attachment",
+          "Explicit approval before privileged packet capture",
+          "Observed, correlated, candidate, and unknown evidence language"
+        ]
+      },
+      {
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+          {
+            "@type": "ListItem",
+            "position": 1,
+            "name": "skbx",
+            "item": "https://copyleftdev.github.io/skbx/"
+          },
+          {
+            "@type": "ListItem",
+            "position": 2,
+            "name": "Agent onboarding",
+            "item": "https://copyleftdev.github.io/skbx/agents.html"
+          }
+        ]
+      }
+    ]
+  }
+  </script>
+  <title>Install skbx for Codex and Claude Code</title>
+</head>
+<body class="onboard-page">
+  <a class="skip-link" href="#onboard-main">Skip to agent onboarding</a>
+
+  <header class="site-header onboard-header" data-header>
+    <a class="brand" href="./">
+      <img src="assets/skbx-flight-mark.svg" alt="" width="36" height="36">
+      <span>skbx</span>
+      <span class="brand-state">agent onboarding</span>
+    </a>
+    <nav aria-label="Agent onboarding navigation">
+      <a href="./">Overview</a>
+      <a href="#install">Install</a>
+      <a href="#guardrails">Guardrails</a>
+      <a class="nav-github" href="https://github.com/copyleftdev/skbx/tree/main/plugins/skbx">Source <span aria-hidden="true">↗</span></a>
+    </nav>
+  </header>
+
+  <main id="onboard-main">
+    <section class="onboard-hero" aria-labelledby="onboard-title">
+      <div class="onboard-hero-copy">
+        <p class="eyebrow reveal" style="--i: 0">
+          <span class="signal-dot"></span>
+          Codex + Claude Code · plugin 0.1.0
+        </p>
+        <h1 id="onboard-title" class="reveal" style="--i: 1">
+          Give your agent<br>
+          a packet evidence<br>
+          <em>protocol.</em>
+        </h1>
+        <p class="onboard-deck reveal" style="--i: 2">
+          One GitHub repository exposes native marketplaces for Codex and
+          Claude Code. Both install the same skbx workflow: inspect first,
+          bound the capture, ask before privilege, and never invent the
+          missing middle.
+        </p>
+        <div class="onboard-hero-actions reveal" style="--i: 3">
+          <a class="primary-link" href="#install">Choose your agent <span aria-hidden="true">↓</span></a>
+          <a class="text-link" href="#verified">See what was verified <span aria-hidden="true">→</span></a>
+        </div>
+      </div>
+
+      <div class="agent-handshake reveal" style="--i: 4" aria-label="Plugin route from GitHub to Codex and Claude Code">
+        <div class="handshake-source">
+          <span>MARKETPLACE SOURCE</span>
+          <strong>copyleftdev/skbx</strong>
+          <code>https://github.com/copyleftdev/skbx.git</code>
+        </div>
+        <div class="handshake-route" aria-hidden="true">
+          <span></span>
+          <i></i>
+          <span></span>
+        </div>
+        <div class="handshake-targets">
+          <div>
+            <span>CODEX</span>
+            <strong>.codex-plugin</strong>
+            <small>VALID</small>
+          </div>
+          <div>
+            <span>CLAUDE CODE</span>
+            <strong>.claude-plugin</strong>
+            <small>VALID</small>
+          </div>
+        </div>
+        <footer>
+          <span>shared skill / use-skbx</span>
+          <span>no connector · no secret</span>
+        </footer>
+      </div>
+    </section>
+
+    <section class="onboard-verdict" aria-labelledby="onboard-verdict-title">
+      <p class="section-kicker">The official shape</p>
+      <h2 id="onboard-verdict-title">Add the marketplace.<br><em>Then install the plugin.</em></h2>
+      <p>
+        A repository URL registers a catalog; it does not silently activate
+        its contents. Both clients preserve that trust step by making plugin
+        installation a second command.
+      </p>
+    </section>
+
+    <section class="onboard-install" id="install" aria-labelledby="onboard-install-title">
+      <header>
+        <p class="section-kicker">Two clients · one source</p>
+        <h2 id="onboard-install-title">Pick the lane<br>you are in.</h2>
+        <p>
+          These commands install the agent workflow. They do not install the
+          native <code>skbx</code> binary or run a privileged capture.
+        </p>
+      </header>
+
+      <div class="agent-lanes">
+        <article class="agent-lane">
+          <div class="agent-lane-head">
+            <span>01 / CODEX</span>
+            <strong>CLI + desktop</strong>
+          </div>
+          <ol>
+            <li>
+              <span>01</span>
+              <div>
+                <strong>Add the GitHub marketplace</strong>
+                <p>Codex snapshots the repository's marketplace catalog.</p>
+              </div>
+            </li>
+            <li>
+              <span>02</span>
+              <div>
+                <strong>Install <code>skbx@skbx-tools</code></strong>
+                <p>The shared skill becomes available to new sessions.</p>
+              </div>
+            </li>
+            <li>
+              <span>03</span>
+              <div>
+                <strong>Start a new session</strong>
+                <p>Bundled skills load when the next Codex session begins.</p>
+              </div>
+            </li>
+          </ol>
+          <div class="agent-install-command">
+            <div>
+              <span>shell / codex</span>
+              <button type="button"
+                data-copy="codex plugin marketplace add https://github.com/copyleftdev/skbx.git&#10;codex plugin add skbx@skbx-tools"
+                data-copy-success="Codex plugin commands copied."
+                aria-label="Copy Codex plugin install commands">Copy commands</button>
+            </div>
+            <pre><code>codex plugin marketplace add \
+  https://github.com/copyleftdev/skbx.git
+
+codex plugin add skbx@skbx-tools</code></pre>
+          </div>
+        </article>
+
+        <article class="agent-lane">
+          <div class="agent-lane-head">
+            <span>02 / CLAUDE CODE</span>
+            <strong>CLI + editor</strong>
+          </div>
+          <ol>
+            <li>
+              <span>01</span>
+              <div>
+                <strong>Add the GitHub marketplace</strong>
+                <p>Claude Code reads the repository's marketplace catalog.</p>
+              </div>
+            </li>
+            <li>
+              <span>02</span>
+              <div>
+                <strong>Install <code>skbx@skbx-tools</code></strong>
+                <p>The workflow is cached under the plugin namespace.</p>
+              </div>
+            </li>
+            <li>
+              <span>03</span>
+              <div>
+                <strong>Reload plugins</strong>
+                <p>Run <code>/reload-plugins</code> or restart Claude Code.</p>
+              </div>
+            </li>
+          </ol>
+          <div class="agent-install-command">
+            <div>
+              <span>shell / claude</span>
+              <button type="button"
+                data-copy="claude plugin marketplace add https://github.com/copyleftdev/skbx.git&#10;claude plugin install skbx@skbx-tools"
+                data-copy-success="Claude Code plugin commands copied."
+                aria-label="Copy Claude Code plugin install commands">Copy commands</button>
+            </div>
+            <pre><code>claude plugin marketplace add \
+  https://github.com/copyleftdev/skbx.git
+
+claude plugin install skbx@skbx-tools</code></pre>
+          </div>
+        </article>
+      </div>
+      <p id="copy-status" class="copy-status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="onboard-boundary" id="guardrails" aria-labelledby="onboard-boundary-title">
+      <div>
+        <p class="section-kicker">What the plugin changes</p>
+        <h2 id="onboard-boundary-title">Instructions arrive.<br>Authority does not.</h2>
+        <p>
+          This is a skill-only plugin. It bundles no MCP server, connector,
+          background hook, credential, or native executable.
+        </p>
+      </div>
+      <div class="onboard-boundary-ledger">
+        <article>
+          <span>THE AGENT MAY</span>
+          <ul>
+            <li>Inspect the OS, architecture, and existing binary</li>
+            <li>Run <code>doctor</code> and a no-attach probe plan</li>
+            <li>Replay an existing trace without root</li>
+            <li>Propose the narrowest next capture</li>
+            <li>Explain evidence with stable handles</li>
+          </ul>
+        </article>
+        <article>
+          <span>THE AGENT MUST NOT</span>
+          <ul>
+            <li>Install packages without permission</li>
+            <li>Run <code>sudo</code> without explicit authorization</li>
+            <li>Capture traffic outside the user's authority</li>
+            <li>Call a partial trace complete</li>
+            <li>Invent ISP or target-host observations</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section class="onboard-first-prompt" aria-labelledby="onboard-prompt-title">
+      <div>
+        <p class="section-kicker">First contact</p>
+        <h2 id="onboard-prompt-title">Ask for a plan<br>before a trace.</h2>
+      </div>
+      <div class="prompt-receipt">
+        <span>starter prompt / safe boundary</span>
+        <blockquote>
+          Use skbx to check this Linux host, plan a bounded trace for an HTTPS
+          request, and stop before any privileged capture.
+        </blockquote>
+        <button type="button"
+          data-copy="Use skbx to check this Linux host, plan a bounded trace for an HTTPS request, and stop before any privileged capture."
+          data-copy-success="Starter prompt copied."
+          aria-label="Copy the safe skbx starter prompt">Copy prompt</button>
+      </div>
+    </section>
+
+    <section class="onboard-protocol" aria-labelledby="onboard-protocol-title">
+      <header>
+        <p class="section-kicker">Shared skill · open format</p>
+        <h2 id="onboard-protocol-title">The same investigation<br>language on both sides.</h2>
+      </header>
+      <ol>
+        <li><span>01</span><strong>Inspect</strong><p>Read-only host and binary checks.</p></li>
+        <li><span>02</span><strong>Plan</strong><p>Resolve probes without attachment.</p></li>
+        <li><span>03</span><strong>Authorize</strong><p>Name scope before privilege.</p></li>
+        <li><span>04</span><strong>Capture</strong><p>Bound time, traffic, and output.</p></li>
+        <li><span>05</span><strong>Verify</strong><p>Read footer and loss counters.</p></li>
+        <li><span>06</span><strong>Explain</strong><p>Cite handles; preserve unknowns.</p></li>
+      </ol>
+    </section>
+
+    <section class="onboard-verified" id="verified" aria-labelledby="onboard-verified-title">
+      <div>
+        <p class="section-kicker">Verified 2026-07-27</p>
+        <h2 id="onboard-verified-title">Schemas checked.<br>Commands exercised.</h2>
+        <p>
+          The plugin and marketplace manifests pass the native validators for
+          Codex CLI 0.145.0 and Claude Code 2.1.220.
+        </p>
+      </div>
+      <div class="verification-register">
+        <a href="https://developers.openai.com/plugins/build/plugins">
+          <span>OPENAI</span>
+          <strong>Package plugins + Git marketplaces</strong>
+          <span aria-hidden="true">↗</span>
+        </a>
+        <a href="https://code.claude.com/docs/en/plugin-marketplaces">
+          <span>ANTHROPIC</span>
+          <strong>Create + distribute plugin marketplaces</strong>
+          <span aria-hidden="true">↗</span>
+        </a>
+        <a href="https://github.com/copyleftdev/skbx/blob/main/plugins/skbx/skills/use-skbx/SKILL.md">
+          <span>SHARED CONTRACT</span>
+          <strong>Inspect the installed skill instructions</strong>
+          <span aria-hidden="true">↗</span>
+        </a>
+      </div>
+    </section>
+
+    <section class="onboard-next" aria-labelledby="onboard-next-title">
+      <p class="section-kicker">Installed is not observed</p>
+      <h2 id="onboard-next-title">Give it a bounded<br>question to answer.</h2>
+      <div>
+        <a class="primary-link" href="guides/trace-a-website-request.html">Trace a website request <span aria-hidden="true">→</span></a>
+        <a class="text-link" href="guides/debug-linux-packet-drops.html">Debug a Linux packet drop <span aria-hidden="true">→</span></a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <a class="brand footer-brand" href="./">
+      <img src="assets/skbx-flight-mark.svg" alt="" width="32" height="32">
+      <span>skbx</span>
+    </a>
+    <p>Packet paths, with receipts.</p>
+    <div>
+      <a href="./">Overview</a>
+      <a href="arc.html">Arc</a>
+      <a href="llms.txt">AI / crawler brief</a>
+      <a href="https://github.com/copyleftdev/skbx/tree/main/plugins/skbx">Plugin source</a>
+      <a href="https://github.com/copyleftdev/skbx/issues">Issues</a>
+    </div>
+  </footer>
+</body>
+</html>

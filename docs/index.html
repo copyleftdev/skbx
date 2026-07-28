@@ -97,6 +97,7 @@
           "Stable event and route handles",
           "Deterministic rootless replay",
           "Explicit capture loss and completeness telemetry",
+          "Installable Codex and Claude Code agent workflow",
           "Experimental multi-host capture missions with explicit correlation uncertainty",
           "Machine-readable commands, schemas, limits, and invariants"
         ],
@@ -119,6 +120,7 @@
     <nav aria-label="Primary navigation">
       <a href="#flight">Trace a packet</a>
       <a href="#contract">Evidence contract</a>
+      <a href="agents.html">Agents</a>
       <a href="#arc">Arc</a>
       <a class="nav-github" href="https://github.com/copyleftdev/skbx">GitHub <span aria-hidden="true">↗</span></a>
     </nav>
@@ -415,7 +417,10 @@
         <p class="section-kicker">Agent-first by construction</p>
         <h2 id="agent-title">Self-describing.<br>Deterministic.<br>Unimpressed by guesses.</h2>
         <p>An agent can inspect commands, capabilities, limits, invariants, and schemas before it touches the host. Machine output stays on stdout. Diagnostics stay on stderr.</p>
-        <a class="text-link" href="https://github.com/copyleftdev/skbx#built-for-operators-and-agents">Read the agent contract <span aria-hidden="true">↗</span></a>
+        <div class="arc-brief-actions">
+          <a class="primary-link" href="agents.html">Install for your agent <span aria-hidden="true">→</span></a>
+          <a class="text-link" href="https://github.com/copyleftdev/skbx#built-for-operators-and-agents">Read the agent contract <span aria-hidden="true">↗</span></a>
+        </div>
       </div>
     </section>
 
@@ -444,6 +449,7 @@
     <p>Packet paths, with receipts.</p>
     <div>
       <a href="arc.html">Arc</a>
+      <a href="agents.html">Agent onboarding</a>
       <a href="guides/debug-linux-packet-drops.html">Field guide</a>
       <a href="llms.txt">AI / crawler brief</a>
       <a href="https://github.com/copyleftdev/skbx/blob/main/LICENSE">AGPL-3.0</a>

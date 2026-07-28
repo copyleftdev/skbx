@@ -98,6 +98,32 @@ The native engine remains the source of truth. An AI system may explain a
 captured event, but it cannot manufacture one. Machine output stays on stdout;
 diagnostics stay on stderr; missing footers and observation loss are explicit.
 
+### Install the agent workflow
+
+The repository is also a plugin marketplace for Codex and Claude Code. Both
+clients install the same `use-skbx` skill; the plugin contains instructions,
+not the native binary, credentials, an MCP server, or a background hook.
+
+For Codex:
+
+```console
+codex plugin marketplace add https://github.com/copyleftdev/skbx.git
+codex plugin add skbx@skbx-tools
+```
+
+Start a new Codex session after installation.
+
+For Claude Code:
+
+```console
+claude plugin marketplace add https://github.com/copyleftdev/skbx.git
+claude plugin install skbx@skbx-tools
+```
+
+Run `/reload-plugins` or restart Claude Code after installation. See the
+[agent onboarding guide](https://copyleftdev.github.io/skbx/agents.html) for
+the trust boundary, first prompt, manifests, and validation details.
+
 ## Arc: multi-host mission control
 
 `skbx-arc` is an experimental, local-first control plane for bounded captures

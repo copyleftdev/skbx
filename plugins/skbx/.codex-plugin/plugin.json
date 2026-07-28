@@ -1,0 +1,41 @@
+{
+  "name": "skbx",
+  "version": "0.1.0",
+  "description": "Install, validate, and use skbx for evidence-first Linux packet-path investigations.",
+  "author": {
+    "name": "copyleftdev",
+    "url": "https://github.com/copyleftdev"
+  },
+  "homepage": "https://copyleftdev.github.io/skbx/agents.html",
+  "repository": "https://github.com/copyleftdev/skbx",
+  "license": "AGPL-3.0-or-later",
+  "keywords": [
+    "linux",
+    "networking",
+    "ebpf",
+    "packet-tracing",
+    "observability"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "skbx",
+    "shortDescription": "Trace Linux packet paths with receipts.",
+    "longDescription": "Guide bounded skbx installation, host preflight, packet capture, reliability review, replay, and evidence lookup without inventing observations beyond the sensors you control.",
+    "developerName": "copyleftdev",
+    "category": "Developer",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://copyleftdev.github.io/skbx/agents.html",
+    "defaultPrompt": [
+      "Use skbx to plan a safe first packet trace.",
+      "Use skbx to investigate where this HTTPS request stops.",
+      "Use skbx to replay this trace and assess evidence loss."
+    ],
+    "brandColor": "#C8FF00",
+    "composerIcon": "./assets/skbx-flight-mark.svg",
+    "logo": "./assets/skbx-flight-mark.svg"
+  }
+}

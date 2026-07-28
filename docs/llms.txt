@@ -34,6 +34,30 @@ Live capture requires Linux, kernel BTF, and root or appropriate BPF/perf
 capabilities. Replay, schema inspection, and evidence lookup do not require
 root.
 
+## Install the agent workflow
+
+The repository exposes `skbx@skbx-tools` as a Git-hosted plugin for Codex and
+Claude Code. The plugin bundles the shared `use-skbx` skill. It does not bundle
+the native binary, a connector, an MCP server, a background hook, or secrets.
+
+Codex:
+
+```console
+codex plugin marketplace add https://github.com/copyleftdev/skbx.git
+codex plugin add skbx@skbx-tools
+```
+
+Start a new Codex session after installation.
+
+Claude Code:
+
+```console
+claude plugin marketplace add https://github.com/copyleftdev/skbx.git
+claude plugin install skbx@skbx-tools
+```
+
+Run `/reload-plugins` or restart Claude Code after installation.
+
 ## Evidence workflow
 
 ```console
@@ -83,6 +107,7 @@ production gates.
 
 ## Primary documentation
 
+- [Agent onboarding for Codex and Claude Code](https://copyleftdev.github.io/skbx/agents.html)
 - [Arc multi-host mission control](https://copyleftdev.github.io/skbx/arc.html)
 - [Website request path field guide](https://copyleftdev.github.io/skbx/guides/trace-a-website-request.html)
 - [Linux packet-drop field guide](https://copyleftdev.github.io/skbx/guides/debug-linux-packet-drops.html)
@@ -105,6 +130,8 @@ production gates.
 - Arc evidence levels: `observed` is local sensor evidence; `correlated` and
   `candidate` are cross-host inferences with an explicit basis; `unknown`
   means Arc makes no relationship claim.
+- Agent plugin: the Codex and Claude Code packages share one `use-skbx` skill
+  and require a separate marketplace-add and plugin-install step.
 - Inspiration: pwru. skbx adds a versioned evidence lifecycle designed for
   deterministic human and agent consumption.
 - Visibility boundary: skbx proves kernel packet paths only on Linux machines
