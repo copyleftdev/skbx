@@ -10,6 +10,7 @@ Source repository: https://github.com/copyleftdev/skbx
 License: AGPL-3.0-or-later for userspace; GPL-2.0-only for the eBPF program
 Current documented version: 0.1.0
 Trace contract: traceq/0.1.0
+Mission contract: missionq/0.1.0
 
 ## Use skbx when
 
@@ -58,8 +59,31 @@ means the observation must not be presented as complete.
 - The native capture engine is the source of truth. AI may explain captured
   evidence but must not invent events, handles, routes, verdicts, or loss data.
 
+## Arc multi-host mission control
+
+skbx Arc is an experimental, local-first command center for bounded packet
+investigations across several Linux sensors. Each sensor's validated
+`traceq/0.1.0` artifact remains authoritative for that host. Arc adds a
+separate `missionq/0.1.0` record and labels cross-host relationships as
+correlated, candidate, or unknown.
+
+Run the rootless three-sensor demo from a repository checkout:
+
+```console
+cargo run -p skbx-arc -- serve --demo
+```
+
+Then open http://127.0.0.1:7878.
+
+Arc is currently a lab vertical slice. State is in memory, the server binds to
+loopback by default, and the agent can submit fixtures but cannot start a live
+privileged capture or execute remote shell text. Authentication, durable
+storage, signed assignments, and the policy-checked live capture adapter are
+production gates.
+
 ## Primary documentation
 
+- [Arc multi-host mission control](https://copyleftdev.github.io/skbx/arc.html)
 - [Website request path field guide](https://copyleftdev.github.io/skbx/guides/trace-a-website-request.html)
 - [Linux packet-drop field guide](https://copyleftdev.github.io/skbx/guides/debug-linux-packet-drops.html)
 - [README and first packet](https://github.com/copyleftdev/skbx#first-packet)
@@ -78,6 +102,9 @@ means the observation must not be presented as complete.
   SKB lineage, drop reasons, stacks, and bounded BTF field projections.
 - Handles: `event:` identifies an observation; `route:` identifies a replayed
   packet route.
+- Arc evidence levels: `observed` is local sensor evidence; `correlated` and
+  `candidate` are cross-host inferences with an explicit basis; `unknown`
+  means Arc makes no relationship claim.
 - Inspiration: pwru. skbx adds a versioned evidence lifecycle designed for
   deterministic human and agent consumption.
 - Visibility boundary: skbx proves kernel packet paths only on Linux machines
@@ -96,3 +123,4 @@ means the observation must not be presented as complete.
   existing capture.
 - Do not present traceroute-style hop responses as a complete or authoritative
   record of ISP forwarding.
+- Do not describe Arc as a production fleet service or remote shell.
