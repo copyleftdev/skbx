@@ -173,15 +173,15 @@ impl ControlPlane {
         };
 
         let lease_key = (mission_id.clone(), sensor_id.to_owned());
-        if let Some(existing) = self.leases.get(&lease_key)
-            && existing.lease_expires_unix_ns > now_ns
-        {
-            let sensor = self
-                .sensors
-                .get_mut(sensor_id)
-                .expect("sensor existence was checked");
-            sensor.last_seen_unix_ns = now_ns;
-            return Ok(Some(existing.clone()));
+        if let Some(existing) = self.leases.get(&lease_key) {
+            if existing.lease_expires_unix_ns > now_ns {
+                let sensor = self
+                    .sensors
+                    .get_mut(sensor_id)
+                    .expect("sensor existence was checked");
+                sensor.last_seen_unix_ns = now_ns;
+                return Ok(Some(existing.clone()));
+            }
         }
 
         self.generation = self.generation.saturating_add(1);

@@ -599,10 +599,10 @@ fn sparse_min_cost_matching(
     let mut selected = Vec::new();
     for left in 0..left_count {
         for edge in &graph[left_start + left] {
-            if let Some(index) = edge.candidate_index
-                && edge.capacity == 0
-            {
-                selected.push(candidates[index]);
+            if edge.capacity == 0 {
+                if let Some(index) = edge.candidate_index {
+                    selected.push(candidates[index]);
+                }
             }
         }
     }
