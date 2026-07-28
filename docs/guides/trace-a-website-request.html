@@ -102,6 +102,7 @@
     </a>
     <nav aria-label="Guide navigation">
       <a href="../">Overview</a>
+      <a href="../route.html">Route dossiers</a>
       <a href="#local-host">Run the trace</a>
       <a class="nav-github" href="https://github.com/copyleftdev/skbx">GitHub <span aria-hidden="true">↗</span></a>
     </nav>
@@ -120,8 +121,8 @@
           <h1>Your browser said “loading.” <em>What actually happened?</em></h1>
           <p class="guide-deck">
             Follow one controlled HTTPS request from your Linux kernel, across
-            the part of the Internet you can only infer, to a target host you
-            may—or may not—control.
+            an Internet route you can probe but not directly observe, to a
+            target host you may—or may not—control.
           </p>
           <div class="guide-hero-actions">
             <a class="primary-link" href="#vantage">Map the evidence boundary <span aria-hidden="true">↓</span></a>
@@ -137,7 +138,7 @@
             <ol>
               <li class="is-local"><span>01</span><strong>your host</strong><em>prove</em></li>
               <li class="is-conditional"><span>02</span><strong>gateway</strong><em>prove if controlled</em></li>
-              <li class="is-inference"><span>03</span><strong>ISP / transit</strong><em>infer</em></li>
+              <li class="is-inference"><span>03</span><strong>ISP / transit</strong><em>bound</em></li>
               <li class="is-conditional"><span>04</span><strong>target edge</strong><em>prove if controlled</em></li>
               <li class="is-verdict"><span>05</span><strong>comparison</strong><em>narrow the fault</em></li>
             </ol>
@@ -146,7 +147,7 @@
             <div><dt>Reproducer</dt><dd>curl / HTTPS</dd></div>
             <div><dt>Transport</dt><dd>TCP 443 / IPv4</dd></div>
             <div><dt>Local truth</dt><dd>skbx traceq</dd></div>
-            <div><dt>Transit truth</dt><dd>bounded inference</dd></div>
+            <div><dt>Transit record</dt><dd>skbx-route / routeq</dd></div>
           </dl>
           <p class="guide-reviewed">Dogfooded 2026-07-27 · <code>traceq/0.1.0</code></p>
         </aside>
@@ -340,20 +341,40 @@ skbx replay web-trace.jsonl --format json</code></pre>
             <span class="guide-step">04 / BOUND THE ISP</span>
             <h2 id="isp-title">Probe transit. Do not promote it to proof.</h2>
             <p>
-              <code>tracepath</code> asks routers along the path to reveal
-              themselves and can discover path MTU. <code>mtr</code> repeats
-              hop probes to show how responses vary. Either may encounter
-              silent or rate-limited routers, asymmetric routes, tunnels, or
-              anycast edges.
+              <code>skbx-route</code> preserves one bounded UDP route
+              observation as a replayable dossier. It records each response
+              or timeout, uses one five-tuple to reduce per-flow
+              load-balancing artifacts, and keeps passive routing metadata
+              separate from direct responses. Silent or rate-limited routers,
+              asymmetric routes, tunnels, and anycast edges remain visibility
+              boundaries.
             </p>
             <div class="guide-code-block">
               <div class="guide-code-toolbar">
-                <span>shell / transit probes</span>
-                <button type="button" data-copy="tracepath -n &quot;$TARGET_IP&quot;&#10;mtr --report --report-cycles 20 &quot;$TARGET_IP&quot;" data-copy-success="Transit probe commands copied." aria-label="Copy tracepath and mtr commands">Copy</button>
+                <span>shell / bounded route dossier</span>
+                <button type="button" data-copy="cargo install --git https://github.com/copyleftdev/skbx --locked skbx-route&#10;skbx-route plan &quot;$TARGET_IP&quot; --max-hops 20 --probes 2 --timeout-ms 500 --max-duration-ms 30000 --json&#10;skbx-route trace &quot;$TARGET_IP&quot; --max-hops 20 --probes 2 --timeout-ms 500 --max-duration-ms 30000 --output web-route.routeq.jsonl&#10;skbx-route replay web-route.routeq.jsonl --format json" data-copy-success="Route dossier commands copied." aria-label="Copy skbx-route install, plan, trace, and replay commands">Copy</button>
               </div>
-              <pre><code>tracepath -n "$TARGET_IP"
-mtr --report --report-cycles 20 "$TARGET_IP"</code></pre>
+              <pre><code>cargo install --git https://github.com/copyleftdev/skbx --locked skbx-route
+
+skbx-route plan "$TARGET_IP" \
+  --max-hops 20 --probes 2 \
+  --timeout-ms 500 --max-duration-ms 30000 \
+  --json
+
+skbx-route trace "$TARGET_IP" \
+  --max-hops 20 --probes 2 \
+  --timeout-ms 500 --max-duration-ms 30000 \
+  --output web-route.routeq.jsonl
+
+skbx-route replay web-route.routeq.jsonl --format json</code></pre>
             </div>
+            <p>
+              Use <code>tracepath</code> when path-MTU discovery is the
+              question, or <code>mtr</code> when repeated response variation is
+              worth the additional probes. Open the
+              <a href="../route.html">route-dossier guide</a> before opting
+              into public-address RIPEstat enrichment.
+            </p>
             <div class="guide-questions transit-rules">
               <article>
                 <h3>A hop does not answer.</h3>
@@ -486,6 +507,7 @@ mtr --report --report-cycles 20 "$TARGET_IP"</code></pre>
               transport, then adapt the filter to TCP or UDP port 443.
             </p>
             <div class="guide-links reference-links">
+              <a class="text-link" href="../route.html">skbx-route evidence model <span aria-hidden="true">→</span></a>
               <a class="text-link" href="https://curl.se/docs/manpage.html#-w">curl timing variables <span aria-hidden="true">↗</span></a>
               <a class="text-link" href="https://man7.org/linux/man-pages/man8/tracepath.8@@iputils.html">tracepath manual <span aria-hidden="true">↗</span></a>
               <a class="text-link" href="https://www.rfc-editor.org/rfc/rfc9114.html">HTTP/3 over QUIC <span aria-hidden="true">↗</span></a>
@@ -523,6 +545,7 @@ mtr --report --report-cycles 20 "$TARGET_IP"</code></pre>
     </a>
     <p>Packet paths, with receipts.</p>
     <div>
+      <a href="../route.html">Route dossiers</a>
       <a href="../llms.txt">AI / crawler brief</a>
       <a href="https://github.com/copyleftdev/skbx/blob/main/LICENSE">AGPL-3.0</a>
       <a href="https://github.com/copyleftdev/skbx/issues">Issues</a>

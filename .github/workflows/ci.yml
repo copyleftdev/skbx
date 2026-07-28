@@ -102,12 +102,23 @@ jobs:
             --locked \
             --root "$CARGO_INSTALL_ROOT" \
             skbx-cli
+          cargo install \
+            --git "file://$GITHUB_WORKSPACE" \
+            --rev "$GITHUB_SHA" \
+            --locked \
+            --root "$CARGO_INSTALL_ROOT" \
+            skbx-route
           version="$(cargo metadata --no-deps --format-version 1 |
             jq -r '.packages[] | select(.name == "skbx-cli") | .version')"
           "$CARGO_INSTALL_ROOT/bin/skbx" describe --format json | jq -e --arg version "$version" '
             .name == "skbx"
             and .version == $version
             and .contract_version == "traceq/0.1.0"
+          '
+          "$CARGO_INSTALL_ROOT/bin/skbx-route" describe | jq -e --arg version "$version" '
+            .name == "skbx-route"
+            and .version == $version
+            and .contract_version == "routeq/0.1.0"
           '
 
       - name: Verify agent contract
@@ -120,6 +131,19 @@ jobs:
           target/release/skbx schema | jq -e '
             ."$schema" == "https://json-schema.org/draft/2020-12/schema"
             and ."$defs".EventEnvelope
+          '
+          target/release/skbx-route describe | jq -e '
+            .contract_version == "routeq/0.1.0"
+            and .limits.max_packets == 256
+            and (.invariants | index("a silent hop is unknown and is not labeled as a drop"))
+          '
+          route_file="$RUNNER_TEMP/demo.routeq.jsonl"
+          target/release/skbx-route demo --output "$route_file"
+          target/release/skbx-route replay "$route_file" --format json | jq -e '
+            .hops == 4
+            and .responsive_hops == 3
+            and .destination_reached == true
+            and .complete == true
           '
 
       - name: Verify embedded eBPF metadata

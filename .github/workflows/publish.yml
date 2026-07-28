@@ -85,4 +85,5 @@ jobs:
           publish_crate skbx-contract
           publish_crate skbx-core
           publish_crate skbx-sensor
+          publish_crate skbx-route
           publish_crate skbx-cli

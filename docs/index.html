@@ -4,11 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#12150f">
-  <meta name="description" content="Trace Linux packet paths through kernel hooks, TC, XDP, tunnels, and drops with Rust and CO-RE eBPF—then replay the bounded evidence.">
+  <meta name="description" content="Trace Linux packet paths and bounded internet routes with replayable evidence. Inspect kernel hooks, hops, explicit unknowns, stable handles, and loss telemetry.">
   <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
   <meta name="author" content="copyleftdev">
   <meta property="og:title" content="skbx — Linux packet tracing with replayable eBPF evidence">
-  <meta property="og:description" content="See where a packet went inside Linux. Preserve stable event handles, replay exact routes, and inspect explicit loss telemetry.">
+  <meta property="og:description" content="See where a packet went across the internet and inside Linux. Preserve stable handles, replay exact routes, and inspect explicit unknowns and loss.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://copyleftdev.github.io/skbx/">
   <meta property="og:site_name" content="skbx">
@@ -19,7 +19,7 @@
   <meta property="og:image:alt" content="skbx packet flight recorder route through Linux kernel hooks">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="skbx — Linux packet tracing with replayable eBPF evidence">
-  <meta name="twitter:description" content="Capture Linux kernel packet paths, replay exact routes, and keep explicit reliability telemetry.">
+  <meta name="twitter:description" content="Capture bounded internet and Linux kernel packet paths, replay the evidence, and keep unknowns explicit.">
   <meta name="twitter:image" content="https://copyleftdev.github.io/skbx/assets/skbx-social-card.png">
   <meta name="twitter:image:alt" content="skbx packet flight recorder route through Linux kernel hooks">
   <link rel="canonical" href="https://copyleftdev.github.io/skbx/">
@@ -40,7 +40,7 @@
         "@id": "https://copyleftdev.github.io/skbx/#webpage",
         "url": "https://copyleftdev.github.io/skbx/",
         "name": "skbx — Linux packet tracing with replayable eBPF evidence",
-        "description": "skbx traces Linux packet paths through kernel functions, TC, XDP, tunnels, transforms, and drops, then preserves the bounded evidence for deterministic replay.",
+        "description": "skbx traces bounded internet routes and Linux packet paths through kernel functions, TC, XDP, tunnels, transforms, and drops, then preserves the evidence for deterministic replay.",
         "inLanguage": "en",
         "mainEntity": {
           "@id": "https://copyleftdev.github.io/skbx/#software"
@@ -97,6 +97,8 @@
           "Stable event and route handles",
           "Deterministic rootless replay",
           "Explicit capture loss and completeness telemetry",
+          "Rootless bounded internet route dossiers with explicit unknowns",
+          "Opt-in passive prefix, origin ASN, and RPKI enrichment",
           "Installable Codex and Claude Code agent workflow",
           "Experimental multi-host capture missions with explicit correlation uncertainty",
           "Machine-readable commands, schemas, limits, and invariants"
@@ -119,7 +121,7 @@
     </a>
     <nav aria-label="Primary navigation">
       <a href="#flight">Trace a packet</a>
-      <a href="#contract">Evidence contract</a>
+      <a href="route.html">Route dossiers</a>
       <a href="agents.html">Agents</a>
       <a href="#arc">Arc</a>
       <a class="nav-github" href="https://github.com/copyleftdev/skbx">GitHub <span aria-hidden="true">↗</span></a>
@@ -332,6 +334,50 @@
       </div>
     </section>
 
+    <section class="route-brief" id="routes" aria-labelledby="route-brief-title">
+      <div class="route-brief-copy">
+        <p class="section-kicker">routeq / 0.1.0 · experimental</p>
+        <h2 id="route-brief-title">Past your host.<br>Across the route.<br><em>No invented middle.</em></h2>
+        <p>
+          <code>skbx-route</code> extends the evidence discipline outward. It
+          observes a bounded rootless UDP route, records every response and
+          timeout, and builds an inspectable dossier for each TTL.
+        </p>
+        <dl class="route-brief-facts">
+          <div><dt>Observe</dt><dd>ICMP response or explicit silence</dd></div>
+          <div><dt>Enrich</dt><dd>Opt-in public routing metadata</dd></div>
+          <div><dt>Replay</dt><dd>Stable trace, hop, and route handles</dd></div>
+        </dl>
+        <div class="arc-brief-actions">
+          <a class="primary-link" href="route.html">Open route dossiers <span aria-hidden="true">→</span></a>
+          <a class="text-link" href="https://github.com/copyleftdev/skbx/tree/main/crates/skbx-route">Inspect the CLI <span aria-hidden="true">↗</span></a>
+        </div>
+      </div>
+
+      <a class="route-brief-visual" href="route.html#dossier" aria-label="Inspect an illustrative hop-by-hop route dossier">
+        <span class="route-brief-head">
+          <span>TRACE / 1.1.1.1</span>
+          <span>COMPLETE ✓</span>
+        </span>
+        <div class="route-brief-field" aria-hidden="true">
+          <svg viewBox="0 0 720 410" preserveAspectRatio="xMidYMid meet">
+            <path class="route-brief-shadow" d="M62 328C148 325 163 229 255 232S358 292 434 244 517 126 652 98"/>
+            <path class="route-brief-line" pathLength="1" d="M62 328C148 325 163 229 255 232S358 292 434 244 517 126 652 98"/>
+          </svg>
+          <span class="brief-hop brief-hop-1"><i></i><b>01</b><small>1.4 ms</small></span>
+          <span class="brief-hop brief-hop-2"><i></i><b>02</b><small>8.7 ms</small></span>
+          <span class="brief-hop brief-hop-3 is-unknown"><i></i><b>03</b><small>unknown</small></span>
+          <span class="brief-hop brief-hop-4"><i></i><b>04</b><small>18.2 ms</small></span>
+          <span class="brief-hop brief-hop-5 is-target"><i></i><b>05</b><small>reached</small></span>
+        </div>
+        <span class="route-brief-foot">
+          <span>observed 04</span>
+          <span>unknown 01</span>
+          <span>local errors 00</span>
+        </span>
+      </a>
+    </section>
+
     <section class="arc-brief" id="arc" aria-labelledby="arc-brief-title">
       <div class="arc-brief-copy">
         <p class="section-kicker">missionq / 0.1.0 · experimental</p>
@@ -448,6 +494,7 @@
     </a>
     <p>Packet paths, with receipts.</p>
     <div>
+      <a href="route.html">Route dossiers</a>
       <a href="arc.html">Arc</a>
       <a href="agents.html">Agent onboarding</a>
       <a href="guides/debug-linux-packet-drops.html">Field guide</a>
