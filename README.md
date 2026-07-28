@@ -98,6 +98,27 @@ The native engine remains the source of truth. An AI system may explain a
 captured event, but it cannot manufacture one. Machine output stays on stdout;
 diagnostics stay on stderr; missing footers and observation loss are explicit.
 
+## Arc: multi-host mission control
+
+`skbx-arc` is an experimental, local-first control plane for bounded captures
+across several Linux sensors. Its Mission Constellation keeps three claims
+visually distinct: what a sensor observed, what Arc correlated across hosts,
+and what remains unknown.
+
+```console
+cargo run -p skbx-arc -- serve --demo
+```
+
+Then open <http://127.0.0.1:7878>. The seeded website-timeout mission can be
+explored without root, BPF attachment, or network access. `skbx-agent
+fixture-once` exercises the real polling and artifact-upload protocol with an
+existing `traceq` file.
+
+Arc is a lab vertical slice today: state is in memory, the listener is
+loopback-only by default, and there is no authentication or live remote capture
+backend. See [the Arc architecture and rollout guide](docs/arc.md) for the
+evidence contract, correlation algorithm, trust boundary, and production gates.
+
 ## What it can observe
 
 - BTF-discovered `struct sk_buff *` arguments in positions 1–5;

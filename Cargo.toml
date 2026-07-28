@@ -1,8 +1,11 @@
 [workspace]
 members = [
+    "crates/skbx-agent",
+    "crates/skbx-arc",
     "crates/skbx-cli",
     "crates/skbx-contract",
     "crates/skbx-core",
+    "crates/skbx-mission",
     "crates/skbx-sensor",
 ]
 resolver = "2"
@@ -17,6 +20,7 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 anyhow = "1.0.104"
+axum = "0.8.9"
 blake3 = "1.8.5"
 btf-rs = { version = "2.0.0", features = ["regex"] }
 clap = { version = "4.6.4", features = ["derive"] }
@@ -29,13 +33,18 @@ libbpf-rs = "0.26.2"
 nix = { version = "0.31.3", features = ["sched"] }
 pcap = "2.4.0"
 regex = "1.12.3"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.18"
 time = { version = "=0.3.45", features = ["formatting"] }
+tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tower = { version = "0.5.3", features = ["util"] }
+tower-http = { version = "0.7.0", features = ["limit", "trace"] }
 
 skbx-contract = { version = "0.1.0", path = "crates/skbx-contract" }
 skbx-core = { version = "0.1.0", path = "crates/skbx-core" }
+skbx-mission = { version = "0.1.0", path = "crates/skbx-mission" }
 skbx-sensor = { version = "0.1.0", path = "crates/skbx-sensor" }
 
 [profile.release]
