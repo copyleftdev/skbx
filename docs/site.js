@@ -5,7 +5,7 @@
 
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   const header = document.querySelector("[data-header]");
-  const copyStatus = document.querySelector("#copy-status");
+  const copyStatus = document.querySelector("#copy-status, #route-copy-status");
   const copyButtons = document.querySelectorAll("[data-copy]");
   let copyStatusTimer = 0;
 
@@ -127,6 +127,40 @@
   } else {
     steps.forEach((step) => step.classList.add("is-active"));
   }
+
+  const routeDemo = document.querySelector("[data-route-demo]");
+  const routeHops = [...document.querySelectorAll(".route-hop")];
+  const hopDossier = routeDemo?.querySelector(".hop-dossier");
+  const dossierFields = hopDossier
+    ? [...hopDossier.querySelectorAll("[data-dossier-field]")]
+    : [];
+
+  const selectRouteHop = (selected) => {
+    if (!selected || !hopDossier) return;
+
+    routeHops.forEach((hop) => {
+      const isSelected = hop === selected;
+      hop.classList.toggle("is-selected", isSelected);
+      hop.setAttribute("aria-pressed", String(isSelected));
+    });
+
+    dossierFields.forEach((field) => {
+      const key = field.dataset.dossierField;
+      if (key && selected.dataset[key] !== undefined) {
+        field.textContent = selected.dataset[key];
+      }
+    });
+
+    hopDossier.dataset.state = selected.classList.contains("is-unknown")
+      ? "unknown"
+      : selected.classList.contains("is-target")
+        ? "target"
+        : "observed";
+  };
+
+  routeHops.forEach((hop) => {
+    hop.addEventListener("click", () => selectRouteHop(hop));
+  });
 
   const canvas = document.querySelector("#trace-field");
   const hero = document.querySelector(".hero");

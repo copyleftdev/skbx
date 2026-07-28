@@ -11,6 +11,7 @@ License: AGPL-3.0-or-later for userspace; GPL-2.0-only for the eBPF program
 Current documented version: 0.1.0
 Trace contract: traceq/0.1.0
 Mission contract: missionq/0.1.0
+Route contract: routeq/0.1.0
 
 ## Use skbx when
 
@@ -22,6 +23,9 @@ Mission contract: missionq/0.1.0
 - A human or software agent must replay and cite the same captured event.
 - You need explicit loss and completeness telemetry rather than an assumed
   complete trace.
+- You need a bounded rootless internet route observation that distinguishes
+  hop responses, passive routing metadata, candidate interpretations, and
+  unknown space.
 
 ## Install
 
@@ -33,6 +37,17 @@ skbx doctor --json
 Live capture requires Linux, kernel BTF, and root or appropriate BPF/perf
 capabilities. Replay, schema inspection, and evidence lookup do not require
 root.
+
+Install the experimental route-dossier sibling CLI separately:
+
+```console
+cargo install --git https://github.com/copyleftdev/skbx --locked skbx-route
+skbx-route plan 1.1.1.1 --json
+```
+
+`skbx-route trace` currently supports rootless UDP route observation on Linux
+over IPv4. Every run is bounded by hop, probe, timeout, packet, and wall-clock
+limits. It performs no port scanning or service enumeration.
 
 ## Install the agent workflow
 
@@ -105,9 +120,26 @@ privileged capture or execute remote shell text. Authentication, durable
 storage, signed assignments, and the policy-checked live capture adapter are
 production gates.
 
+## Internet route dossiers
+
+`skbx-route` emits an append-only `routeq/0.1.0` stream with `trace_start`,
+ordered `hop`, and mandatory `trace_end` records. Stable `trace:`, `hop:`, and
+`route:` handles make the record replayable and addressable.
+
+The CLI keeps `observed`, `enriched`, `candidate`, and `unknown` claims
+separate. A silent hop is unknown, not a proven drop. Destination arrival is
+recorded only when the target address is the offender for the terminal ICMP
+response.
+
+Optional `enrich` lookups add RIPEstat prefix, origin ASN, and RPKI claims for
+public responder addresses. Private and special-purpose addresses are skipped.
+Enrichment is independently bounded and is never presented as direct transit
+evidence.
+
 ## Primary documentation
 
 - [Agent onboarding for Codex and Claude Code](https://copyleftdev.github.io/skbx/agents.html)
+- [Internet route dossiers](https://copyleftdev.github.io/skbx/route.html)
 - [Arc multi-host mission control](https://copyleftdev.github.io/skbx/arc.html)
 - [Website request path field guide](https://copyleftdev.github.io/skbx/guides/trace-a-website-request.html)
 - [Linux packet-drop field guide](https://copyleftdev.github.io/skbx/guides/debug-linux-packet-drops.html)
@@ -130,6 +162,9 @@ production gates.
 - Arc evidence levels: `observed` is local sensor evidence; `correlated` and
   `candidate` are cross-host inferences with an explicit basis; `unknown`
   means Arc makes no relationship claim.
+- Route evidence: `skbx-route` preserves each observed ICMP response or
+  bounded timeout, supports deterministic replay, and can optionally enrich
+  public responder addresses with separately sourced RIPEstat routing data.
 - Agent plugin: the Codex and Claude Code packages share one `use-skbx` skill
   and require a separate marketplace-add and plugin-install step.
 - Inspiration: pwru. skbx adds a versioned evidence lifecycle designed for

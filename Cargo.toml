@@ -6,6 +6,7 @@ members = [
     "crates/skbx-contract",
     "crates/skbx-core",
     "crates/skbx-mission",
+    "crates/skbx-route",
     "crates/skbx-sensor",
 ]
 resolver = "2"

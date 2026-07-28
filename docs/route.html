@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#12150f">
+  <meta name="description" content="Build bounded hop-by-hop internet route dossiers with skbx-route: rootless UDP observation, explicit unknowns, stable handles, deterministic replay, and opt-in RIPEstat enrichment.">
+  <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1">
+  <meta name="author" content="copyleftdev">
+  <meta property="og:title" content="skbx-route — Internet route dossiers with evidence boundaries">
+  <meta property="og:description" content="Observe a bounded route, preserve every hop response or silence, enrich public responders, and replay the evidence without inventing the middle.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://copyleftdev.github.io/skbx/route.html">
+  <meta property="og:site_name" content="skbx">
+  <meta property="og:image" content="https://copyleftdev.github.io/skbx/assets/skbx-social-card.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="skbx packet flight recorder route through network and Linux kernel evidence">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="skbx-route — Internet route dossiers with evidence boundaries">
+  <meta name="twitter:description" content="A bounded, replayable route observation that keeps observed, enriched, candidate, and unknown claims separate.">
+  <meta name="twitter:image" content="https://copyleftdev.github.io/skbx/assets/skbx-social-card.png">
+  <link rel="canonical" href="https://copyleftdev.github.io/skbx/route.html">
+  <link rel="icon" href="assets/skbx-flight-mark.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Recursive:slnt,wght@-15..0,300..1000&amp;family=Source+Serif+4:opsz,wght@8..60,350..650&amp;display=swap">
+  <link href="https://fonts.googleapis.com/css2?family=Recursive:slnt,wght@-15..0,300..1000&amp;family=Source+Serif+4:opsz,wght@8..60,350..650&amp;display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+  <noscript><link href="https://fonts.googleapis.com/css2?family=Recursive:slnt,wght@-15..0,300..1000&amp;family=Source+Serif+4:opsz,wght@8..60,350..650&amp;display=swap" rel="stylesheet"></noscript>
+  <link rel="stylesheet" href="styles.css">
+  <script src="site.js" defer></script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": ["SoftwareApplication", "SoftwareSourceCode"],
+    "name": "skbx-route",
+    "alternateName": "skbx route dossiers",
+    "description": "An experimental rootless Linux CLI for bounded UDP route observation, stable hop handles, deterministic replay, and opt-in passive routing enrichment.",
+    "url": "https://copyleftdev.github.io/skbx/route.html",
+    "codeRepository": "https://github.com/copyleftdev/skbx/tree/main/crates/skbx-route",
+    "downloadUrl": "https://github.com/copyleftdev/skbx",
+    "applicationCategory": "DeveloperApplication",
+    "applicationSubCategory": "Network route diagnostics",
+    "operatingSystem": "Linux",
+    "softwareVersion": "0.1.0",
+    "programmingLanguage": "Rust",
+    "license": "https://github.com/copyleftdev/skbx/blob/main/LICENSE",
+    "isPartOf": {
+      "@type": "SoftwareApplication",
+      "name": "skbx",
+      "url": "https://copyleftdev.github.io/skbx/"
+    },
+    "featureList": [
+      "Rootless bounded UDP route observation",
+      "Stable trace, hop, and route handles",
+      "Deterministic JSONL replay",
+      "Explicit observed, enriched, candidate, and unknown evidence levels",
+      "Opt-in bounded RIPEstat routing enrichment",
+      "No port scanning or service enumeration"
+    ]
+  }
+  </script>
+  <title>skbx-route — Internet route dossiers with evidence boundaries</title>
+</head>
+<body class="route-page">
+  <a class="skip-link" href="#main">Skip to route evidence</a>
+
+  <header class="site-header route-header" data-header>
+    <a class="brand" href="index.html">
+      <img src="assets/skbx-flight-mark.svg" alt="" width="36" height="36">
+      <span>skbx</span>
+      <span class="brand-state">route dossiers</span>
+    </a>
+    <nav aria-label="Primary navigation">
+      <a href="index.html">Flight recorder</a>
+      <a href="#dossier">Hop dossier</a>
+      <a href="#boundaries">Boundaries</a>
+      <a href="arc.html">Arc</a>
+      <a class="nav-github" href="https://github.com/copyleftdev/skbx">GitHub <span aria-hidden="true">↗</span></a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="route-hero" aria-labelledby="route-hero-title">
+      <div class="route-hero-copy">
+        <p class="eyebrow reveal" style="--i: 0">
+          <span class="signal-dot"></span>
+          routeq / 0.1.0 · experimental
+        </p>
+        <h1 id="route-hero-title" class="reveal" style="--i: 1">
+          The internet path,<br>
+          <em>with receipts.</em>
+        </h1>
+        <p class="route-hero-deck reveal" style="--i: 2">
+          <code>skbx-route</code> turns a bounded UDP route observation into
+          hop dossiers: what answered, what stayed silent, what public routing
+          data adds, and where certainty ends.
+        </p>
+        <div class="route-hero-actions reveal" style="--i: 3">
+          <button class="command-copy" type="button" data-copy="cargo install --git https://github.com/copyleftdev/skbx --locked skbx-route" aria-describedby="route-copy-status">
+            <span class="prompt" aria-hidden="true">$</span>
+            <code>cargo install --git …/skbx --locked skbx-route</code>
+            <span class="copy-label">Copy install</span>
+          </button>
+          <a class="text-link" href="#dossier">Inspect a route <span aria-hidden="true">↓</span></a>
+        </div>
+        <p id="route-copy-status" class="copy-status" role="status" aria-live="polite"></p>
+        <dl class="route-hero-facts reveal" style="--i: 4">
+          <div><dt>Probe</dt><dd>Rootless UDP / IPv4</dd></div>
+          <div><dt>Budget</dt><dd>Hop + packet + clock bounded</dd></div>
+          <div><dt>Claim</dt><dd>Silence remains unknown</dd></div>
+        </dl>
+      </div>
+
+      <figure class="route-scope reveal" style="--i: 4" aria-labelledby="route-scope-caption">
+        <div class="route-scope-chrome">
+          <span>ROUTE / 1.1.1.1</span>
+          <span><i></i> COMPLETE</span>
+        </div>
+        <svg viewBox="0 0 720 540" role="img" aria-labelledby="scope-title scope-desc">
+          <title id="scope-title">Illustrative bounded route from a Linux host to 1.1.1.1</title>
+          <desc id="scope-desc">Five TTL positions cross local, access, transit, and target zones. The third hop is silent and remains unknown.</desc>
+          <defs>
+            <pattern id="scope-grid" width="48" height="48" patternUnits="userSpaceOnUse">
+              <path d="M48 0H0V48" class="scope-grid-line"/>
+            </pattern>
+          </defs>
+          <rect width="720" height="540" fill="url(#scope-grid)"/>
+          <g class="scope-zones">
+            <text x="54" y="54">LOCAL</text>
+            <text x="276" y="54">ACCESS</text>
+            <text x="462" y="54">TRANSIT</text>
+            <text x="616" y="54">TARGET</text>
+            <path d="M226 26V512M408 26V512M586 26V512"/>
+          </g>
+          <path class="scope-path scope-path-shadow" d="M82 392C172 390 154 286 252 286S342 354 432 274 506 178 638 142"/>
+          <path class="scope-path" pathLength="1" d="M82 392C172 390 154 286 252 286S342 354 432 274 506 178 638 142"/>
+          <g class="scope-node scope-source" transform="translate(82 392)">
+            <circle r="13"/><text x="-4" y="36">SOURCE</text>
+          </g>
+          <g class="scope-node" transform="translate(252 286)">
+            <circle r="13"/><text x="-4" y="36">TTL 01</text>
+          </g>
+          <g class="scope-node scope-unknown" transform="translate(432 274)">
+            <circle r="13"/><text x="-4" y="36">TTL 03 / ?</text>
+          </g>
+          <g class="scope-node scope-target" transform="translate(638 142)">
+            <circle r="15"/><text x="-4" y="38">REACHED</text>
+          </g>
+          <circle class="scope-packet" cx="252" cy="286" r="6"/>
+        </svg>
+        <figcaption id="route-scope-caption">
+          <span>illustrative record</span>
+          <span>04 replies / 0 local errors</span>
+        </figcaption>
+      </figure>
+    </section>
+
+    <section class="route-verdict" aria-labelledby="route-verdict-title">
+      <p class="section-kicker">Traceroute is the opening question</p>
+      <h2 id="route-verdict-title">A hop is not a router inventory.</h2>
+      <p>
+        A response proves that an address answered a particular probe from this
+        vantage at this time. It does not prove every forwarding device, a
+        physical location, ownership, or that silence means loss. The dossier
+        keeps those distinctions intact.
+      </p>
+    </section>
+
+    <section class="route-lab" id="dossier" aria-labelledby="route-lab-title" data-route-demo>
+      <header class="route-lab-heading">
+        <p class="section-kicker">Illustrative routeq record · select a TTL</p>
+        <h2 id="route-lab-title">A hop answers.<br>A dossier opens.</h2>
+        <p>
+          Every point below is inspectable. The selected hop separates the
+          direct response from passive metadata and unresolved questions.
+        </p>
+      </header>
+
+      <div class="route-workbench">
+        <div class="route-plot">
+          <p class="route-scroll-hint">Swipe the plot to inspect TTL 04–05 <span aria-hidden="true">→</span></p>
+          <div class="route-plot-head">
+            <span>trace:7c42… / target 1.1.1.1</span>
+            <span>5 TTLs / 1 probe each</span>
+          </div>
+          <div class="route-plot-field">
+            <div class="route-zone-labels" aria-hidden="true">
+              <span>YOUR LAN</span>
+              <span>ACCESS</span>
+              <span>UNSEEN</span>
+              <span>PUBLIC EDGE</span>
+              <span>TARGET</span>
+            </div>
+            <svg viewBox="0 0 1000 420" preserveAspectRatio="none" aria-hidden="true">
+              <path class="route-plot-shadow" d="M70 330C180 330 185 210 280 210S415 266 487 258 595 310 688 212 820 95 930 110"/>
+              <path class="route-plot-line" pathLength="1" d="M70 330C180 330 185 210 280 210S415 266 487 258 595 310 688 212 820 95 930 110"/>
+            </svg>
+            <button
+              class="route-hop is-selected"
+              type="button"
+              style="--hop-x: 7%; --hop-y: 79%"
+              data-hop="1"
+              data-status="Observed"
+              data-address="192.168.1.1"
+              data-rtt="1.4 ms"
+              data-response="ICMP time exceeded"
+              data-routing="Skipped — private address"
+              data-claim="This address answered the TTL 1 probe from this vantage."
+              data-unknown="Device identity, forwarding policy, and physical location."
+              aria-pressed="true"
+              aria-label="Inspect TTL 1, observed response from 192.168.1.1">
+              <span>01</span><i></i><small>1.4 ms</small>
+            </button>
+            <button
+              class="route-hop"
+              type="button"
+              style="--hop-x: 28%; --hop-y: 50%"
+              data-hop="2"
+              data-status="Observed"
+              data-address="10.24.0.1"
+              data-rtt="8.7 ms"
+              data-response="ICMP time exceeded"
+              data-routing="Skipped — private address"
+              data-claim="This private address answered the TTL 2 probe."
+              data-unknown="Calling it an ISP edge would require additional evidence."
+              aria-pressed="false"
+              aria-label="Inspect TTL 2, observed response from 10.24.0.1">
+              <span>02</span><i></i><small>8.7 ms</small>
+            </button>
+            <button
+              class="route-hop is-unknown"
+              type="button"
+              style="--hop-x: 49%; --hop-y: 61%"
+              data-hop="3"
+              data-status="Unknown"
+              data-address="No responder"
+              data-rtt="Timeout at 400 ms"
+              data-response="No ICMP response observed"
+              data-routing="Not attempted — no public address"
+              data-claim="Only that this probe received no response within its bound."
+              data-unknown="Whether a device forwarded, filtered, deprioritized, or never received it."
+              aria-pressed="false"
+              aria-label="Inspect TTL 3, no response observed">
+              <span>03</span><i></i><small>unknown</small>
+            </button>
+            <button
+              class="route-hop"
+              type="button"
+              style="--hop-x: 69%; --hop-y: 50%"
+              data-hop="4"
+              data-status="Observed"
+              data-address="198.51.100.7"
+              data-rtt="18.2 ms"
+              data-response="ICMP time exceeded"
+              data-routing="Skipped — documentation address"
+              data-claim="This illustrative responder produced a TTL 4 response."
+              data-unknown="The example assigns no real operator, ASN, or geography."
+              aria-pressed="false"
+              aria-label="Inspect TTL 4, illustrative observed response">
+              <span>04</span><i></i><small>18.2 ms</small>
+            </button>
+            <button
+              class="route-hop is-target"
+              type="button"
+              style="--hop-x: 93%; --hop-y: 26%"
+              data-hop="5"
+              data-status="Observed + enriched"
+              data-address="1.1.1.1"
+              data-rtt="23.6 ms"
+              data-response="ICMP port unreachable — target reached"
+              data-routing="1.1.1.0/24 · AS13335 · RPKI valid"
+              data-claim="The target answered; RIPEstat separately describes its public routing origin."
+              data-unknown="The physical packet path and any non-responding devices remain unobserved."
+              aria-pressed="false"
+              aria-label="Inspect TTL 5, target 1.1.1.1 reached with enriched routing data">
+              <span>05</span><i></i><small>23.6 ms</small>
+            </button>
+          </div>
+          <div class="route-plot-foot">
+            <span>attempted 05</span>
+            <span>replies 04</span>
+            <span>timeouts 01</span>
+            <span>local errors 00</span>
+          </div>
+        </div>
+
+        <aside class="hop-dossier" aria-live="polite" aria-atomic="true">
+          <div class="hop-dossier-head">
+            <span>HOP DOSSIER / TTL <b data-dossier-field="hop">1</b></span>
+            <strong data-dossier-field="status">Observed</strong>
+          </div>
+          <dl>
+            <div>
+              <dt>Responder</dt>
+              <dd data-dossier-field="address">192.168.1.1</dd>
+            </div>
+            <div>
+              <dt>Round trip</dt>
+              <dd data-dossier-field="rtt">1.4 ms</dd>
+            </div>
+            <div>
+              <dt>Direct evidence</dt>
+              <dd data-dossier-field="response">ICMP time exceeded</dd>
+            </div>
+            <div>
+              <dt>Passive routing data</dt>
+              <dd data-dossier-field="routing">Skipped — private address</dd>
+            </div>
+          </dl>
+          <div class="dossier-claim">
+            <span>SUPPORTED CLAIM</span>
+            <p data-dossier-field="claim">This address answered the TTL 1 probe from this vantage.</p>
+          </div>
+          <div class="dossier-unknown">
+            <span>STILL UNKNOWN</span>
+            <p data-dossier-field="unknown">Device identity, forwarding policy, and physical location.</p>
+          </div>
+          <code>hop:3e71…</code>
+        </aside>
+      </div>
+      <p class="route-demo-note">
+        This browser visualization uses an illustrative, documentation-safe
+        record. It does not probe your network.
+      </p>
+    </section>
+
+    <section class="route-evidence" aria-labelledby="route-evidence-title">
+      <header>
+        <p class="section-kicker">Evidence vocabulary</p>
+        <h2 id="route-evidence-title">Certainty is a field,<br>not a feeling.</h2>
+      </header>
+      <div class="route-evidence-ledger">
+        <article data-level="observed">
+          <span>01 / OBSERVED</span>
+          <h3>The probe answered.</h3>
+          <p>Local socket evidence records the offender address, ICMP condition, TTL, timing, and probe count.</p>
+        </article>
+        <article data-level="enriched">
+          <span>02 / ENRICHED</span>
+          <h3>A public source adds context.</h3>
+          <p>Opt-in RIPEstat lookups can add prefix, origin ASN, and RPKI state. They never become forwarding evidence.</p>
+        </article>
+        <article data-level="candidate">
+          <span>03 / CANDIDATE</span>
+          <h3>A role is plausible.</h3>
+          <p>“ISP edge” or “target network” may be a useful interpretation, but must retain its basis and uncertainty.</p>
+        </article>
+        <article data-level="unknown">
+          <span>04 / UNKNOWN</span>
+          <h3>The record does not know.</h3>
+          <p>A silent hop, hidden device, physical link, or router policy stays unresolved instead of becoming a story.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="route-budget" aria-labelledby="route-budget-title">
+      <div class="route-budget-copy">
+        <p class="section-kicker">Plan before packets</p>
+        <h2 id="route-budget-title">Full send.<br>Hard ceiling.</h2>
+        <p>
+          <code>plan</code> resolves no target and sends nothing. It validates
+          the complete probe envelope so an operator or agent can inspect the
+          cost before the live command.
+        </p>
+      </div>
+      <div class="route-budget-sheet">
+        <div class="route-budget-equation">
+          <span><b>16</b> max hops</span>
+          <i aria-hidden="true">×</i>
+          <span><b>1</b> probe / hop</span>
+          <i aria-hidden="true">=</i>
+          <span class="route-budget-total"><b>16</b> packet ceiling</span>
+        </div>
+        <dl>
+          <div><dt>Per-probe timeout</dt><dd>400 ms</dd></div>
+          <div><dt>Wall-clock budget</dt><dd>8,000 ms</dd></div>
+          <div><dt>Transport</dt><dd>One fixed UDP five-tuple</dd></div>
+          <div><dt>Active service probes</dt><dd>None</dd></div>
+        </dl>
+        <pre><code>skbx-route plan 1.1.1.1 \
+  --max-hops 16 --probes 1 \
+  --timeout-ms 400 --max-duration-ms 8000 \
+  --json</code></pre>
+      </div>
+    </section>
+
+    <section class="route-contract" aria-labelledby="route-contract-title">
+      <div>
+        <p class="section-kicker">Append-only routeq</p>
+        <h2 id="route-contract-title">Replay the route.<br>Audit the limits.</h2>
+        <p>
+          The stream begins with its plan, emits ordered hop records, and ends
+          with attempted, sent, reply, timeout, and local-error counters. A
+          missing or inconsistent footer is invalid—not “close enough.”
+        </p>
+      </div>
+      <div class="route-record">
+        <header><span>route.routeq.jsonl</span><span>routeq / 0.1.0</span></header>
+        <p><span>01</span><code><b>"type"</b>: "trace_start", <b>"planned_packets"</b>: 16</code></p>
+        <p><span>02</span><code><b>"ttl"</b>: 1, <b>"evidence"</b>: "observed"</code></p>
+        <p class="is-unknown"><span>03</span><code><b>"ttl"</b>: 3, <b>"responder"</b>: null</code></p>
+        <p><span>04</span><code><b>"ttl"</b>: 5, <b>"destination_reached"</b>: true</code></p>
+        <p class="is-footer"><span>05</span><code><b>"type"</b>: "trace_end", <b>"complete"</b>: true</code></p>
+        <footer><span>trace:7c42…</span><span>route:9f18…</span></footer>
+      </div>
+    </section>
+
+    <section class="route-boundaries" id="boundaries" aria-labelledby="route-boundaries-title">
+      <header>
+        <p class="section-kicker">Visibility boundary</p>
+        <h2 id="route-boundaries-title">Across the internet.<br>Inside only what you own.</h2>
+      </header>
+      <div class="route-handoff" aria-label="Evidence handoff from local kernel capture through internet route observation to an optional target sensor">
+        <article>
+          <span>LOCAL HOST</span>
+          <strong>skbx</strong>
+          <p>Kernel hooks, SKB lineage, interfaces, drops, and a replayable <code>traceq</code> artifact.</p>
+        </article>
+        <div class="route-handoff-link">
+          <span>skbx-route</span>
+          <i></i><i></i><i class="is-unknown"></i><i></i>
+          <small>hop responses + explicit silence</small>
+        </div>
+        <article>
+          <span>TARGET HOST</span>
+          <strong>skbx / Arc</strong>
+          <p>If you control it, add a sensor. Arc may correlate the two artifacts; it does not invent the transit path.</p>
+        </article>
+      </div>
+      <div class="route-boundary-rules">
+        <p><span>01</span> No port scanning or service enumeration of intermediate responders.</p>
+        <p><span>02</span> A responder address is not proof of every forwarding device.</p>
+        <p><span>03</span> Reverse DNS, ASN, RPKI, and geography are metadata—not direct transit evidence.</p>
+        <p><span>04</span> Public responder enrichment is opt-in and sends those addresses to RIPEstat.</p>
+      </div>
+    </section>
+
+    <section class="route-install" aria-labelledby="route-install-title">
+      <p class="section-kicker">Start with an inspectable plan.</p>
+      <h2 id="route-install-title">Build your first dossier.</h2>
+      <div class="install-command">
+        <code><span>$</span> cargo install --git https://github.com/copyleftdev/skbx --locked skbx-route</code>
+        <button type="button" data-copy="cargo install --git https://github.com/copyleftdev/skbx --locked skbx-route" data-copy-success="skbx-route install command copied." aria-label="Copy skbx-route Cargo install command">Copy</button>
+      </div>
+      <div class="install-links">
+        <a class="primary-link" href="https://github.com/copyleftdev/skbx/tree/main/crates/skbx-route">Inspect the source <span aria-hidden="true">↗</span></a>
+        <a class="text-link" href="guides/trace-a-website-request.html">Trace a website request <span aria-hidden="true">→</span></a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <a class="brand footer-brand" href="index.html">
+      <img src="assets/skbx-flight-mark.svg" alt="" width="32" height="32">
+      <span>skbx</span>
+    </a>
+    <p>Internet routes, without invented middle.</p>
+    <div>
+      <a href="index.html">Flight recorder</a>
+      <a href="arc.html">Arc</a>
+      <a href="agents.html">Agent onboarding</a>
+      <a href="llms.txt">AI / crawler brief</a>
+      <a href="https://github.com/copyleftdev/skbx/blob/main/LICENSE">AGPL-3.0</a>
+      <a href="https://github.com/copyleftdev/skbx/issues">Issues</a>
+    </div>
+  </footer>
+</body>
+</html>

@@ -145,6 +145,52 @@ loopback-only by default, and there is no authentication or live remote capture
 backend. See [the Arc architecture and rollout guide](docs/arc.md) for the
 evidence contract, correlation algorithm, trust boundary, and production gates.
 
+## Route dossiers: beyond a line of hops
+
+`skbx-route` is an experimental sibling CLI that performs bounded, rootless
+IPv4 UDP route observation and records every TTL as a replayable `routeq`
+evidence dossier. It keeps one five-tuple across the run to reduce per-flow
+load-balancing artifacts, and it never treats a silent router as proof of a
+drop. [Explore the interactive route-dossier field guide](https://copyleftdev.github.io/skbx/route.html)
+for the evidence levels, visibility boundaries, and packet-budget model.
+
+```console
+# Install the sibling CLI from the repository.
+cargo install --git https://github.com/copyleftdev/skbx --locked skbx-route
+
+# Inspect the exact packet and time budget without resolving or probing.
+skbx-route plan example.com --json
+
+# Exercise replay and explanation without touching the network.
+skbx-route demo --output demo.routeq.jsonl
+skbx-route replay demo.routeq.jsonl --format json
+
+# Run a bounded live observation on Linux without root.
+skbx-route trace example.com \
+  --max-hops 20 \
+  --probes 2 \
+  --timeout-ms 500 \
+  --max-duration-ms 30000 \
+  --output route.routeq.jsonl
+
+# Opt in to passive prefix, origin-ASN, and RPKI context from RIPEstat.
+skbx-route enrich route.routeq.jsonl \
+  --max-lookups 64 \
+  --max-duration-ms 30000 \
+  --output route.enriched.routeq.jsonl
+```
+
+The initial vertical slice performs standards-based UDP path observation only.
+It does not port-scan intermediate routers, enumerate their services, or claim
+to observe remote forwarding decisions. Passive RIPEstat enrichment is a
+separate opt-in command with independent HTTPS request and duration budgets.
+It skips private and special-purpose addresses and sends each remaining public
+responder address to the
+[RIPEstat Data API](https://stat.ripe.net/docs/data-api/ripestat-data-api);
+RIPEstat's service terms apply. The dossier contract distinguishes observed,
+enriched, correlated, candidate, and unknown facts so public routing metadata
+and future cooperative skbx-sensor evidence cannot blur that boundary.
+
 ## What it can observe
 
 - BTF-discovered `struct sk_buff *` arguments in positions 1–5;
