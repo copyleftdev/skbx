@@ -1,0 +1,24 @@
+{
+  "name": "skbx-tools",
+  "owner": {
+    "name": "copyleftdev"
+  },
+  "description": "Evidence-first Linux packet-path workflows for Claude Code.",
+  "plugins": [
+    {
+      "name": "skbx",
+      "source": "./plugins/skbx",
+      "description": "Install, validate, and use skbx without inventing packet evidence.",
+      "homepage": "https://copyleftdev.github.io/skbx/agents.html",
+      "repository": "https://github.com/copyleftdev/skbx",
+      "license": "AGPL-3.0-or-later",
+      "keywords": [
+        "linux",
+        "networking",
+        "ebpf",
+        "packet-tracing",
+        "observability"
+      ]
+    }
+  ]
+}

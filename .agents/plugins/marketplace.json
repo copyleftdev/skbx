@@ -1,0 +1,20 @@
+{
+  "name": "skbx-tools",
+  "interface": {
+    "displayName": "Skbx Tools"
+  },
+  "plugins": [
+    {
+      "name": "skbx",
+      "source": {
+        "source": "local",
+        "path": "./plugins/skbx"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "skbx",
+  "description": "Install, validate, and use skbx for evidence-first Linux packet-path investigations.",
+  "version": "0.1.0",
+  "author": {
+    "name": "copyleftdev",
+    "url": "https://github.com/copyleftdev"
+  },
+  "homepage": "https://copyleftdev.github.io/skbx/agents.html",
+  "repository": "https://github.com/copyleftdev/skbx",
+  "license": "AGPL-3.0-or-later",
+  "keywords": [
+    "linux",
+    "networking",
+    "ebpf",
+    "packet-tracing",
+    "observability"
+  ]
+}
