@@ -1,0 +1,29 @@
+[package]
+name = "skbx-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+skbx-mission.workspace = true
+tokio.workspace = true
+
+[lib]
+name = "skbx_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "skbx-agent"
+path = "src/main.rs"
+
+[dev-dependencies]
+axum.workspace = true
+skbx-arc = { path = "../skbx-arc" }

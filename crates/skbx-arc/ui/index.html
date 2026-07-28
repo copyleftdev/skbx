@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#15170f">
+  <meta name="description" content="skbx Arc assembles bounded Linux packet-path evidence from multiple sensors without hiding uncertainty.">
+  <title>skbx Arc — Mission Constellation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,300..900&amp;family=Recursive:slnt,wght@-15..0,300..1000&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/arc.css">
+  <script src="/arc.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#mission-console">Skip to mission evidence</a>
+
+  <header class="topbar">
+    <a class="arc-brand" href="/" aria-label="skbx Arc home">
+      <span class="arc-mark" aria-hidden="true">
+        <i></i><i></i><i></i>
+      </span>
+      <span>
+        <strong>skbx</strong>
+        <small>ARC / MISSION CONTROL</small>
+      </span>
+    </a>
+
+    <div class="topbar-status" aria-label="Control-plane status">
+      <span class="status-beacon" aria-hidden="true"></span>
+      <span>CONTROL PLANE</span>
+      <strong>LOCAL / READY</strong>
+    </div>
+
+    <div class="mission-clock">
+      <span>MISSION TIME</span>
+      <strong data-mission-clock>+00:00.000</strong>
+    </div>
+  </header>
+
+  <div class="console-shell">
+    <aside class="mission-rail" aria-label="Mission and sensor navigation">
+      <section class="rail-section">
+        <div class="rail-heading">
+          <span>MISSIONS</span>
+          <output data-mission-count>00</output>
+        </div>
+        <div class="mission-list" data-mission-list aria-live="polite">
+          <div class="rail-loading">Receiving mission index…</div>
+        </div>
+      </section>
+
+      <section class="rail-section sensor-index">
+        <div class="rail-heading">
+          <span>SENSORS</span>
+          <output data-sensor-count>00 / 00</output>
+        </div>
+        <ol class="sensor-list" data-sensor-list></ol>
+      </section>
+
+      <footer class="rail-footer">
+        <span>missionq/0.1.0</span>
+        <a href="/api/v1/snapshot">RAW SNAPSHOT ↗</a>
+      </footer>
+    </aside>
+
+    <main id="mission-console" class="mission-console" tabindex="-1">
+      <section class="briefing" aria-labelledby="mission-title">
+        <div>
+          <p class="section-label">ACTIVE INVESTIGATION / <span data-mission-id>NO MISSION</span></p>
+          <h1 id="mission-title" data-mission-title>Waiting for bounded evidence.</h1>
+          <p class="mission-summary" data-mission-summary>
+            Register sensors and arm a mission. Arc will keep observations,
+            correlations, and unknown space visibly separate.
+          </p>
+        </div>
+
+        <dl class="mission-metrics">
+          <div>
+            <dt>STATE</dt>
+            <dd data-mission-state>—</dd>
+          </div>
+          <div>
+            <dt>ARTIFACTS</dt>
+            <dd data-artifact-count>00 / 00</dd>
+          </div>
+          <div>
+            <dt>LOSS</dt>
+            <dd data-loss-count>—</dd>
+          </div>
+          <div>
+            <dt>WINDOW</dt>
+            <dd data-window>—</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="constellation" aria-labelledby="constellation-title">
+        <header class="constellation-header">
+          <div>
+            <p class="section-label">EVIDENCE TOPOLOGY</p>
+            <h2 id="constellation-title">Mission constellation</h2>
+          </div>
+          <ul class="evidence-legend" aria-label="Evidence relationship legend">
+            <li><i class="legend-observed"></i>Observed</li>
+            <li><i class="legend-correlated"></i>Correlated</li>
+            <li><i class="legend-candidate"></i>Candidate</li>
+            <li><i class="legend-unknown"></i>Unknown</li>
+          </ul>
+        </header>
+
+        <div class="constellation-stage" data-constellation>
+          <canvas data-constellation-canvas aria-hidden="true"></canvas>
+          <div class="sensor-layer" data-sensor-layer></div>
+          <div class="stage-empty" data-stage-empty hidden>
+            <span>NO ACTIVE MISSION</span>
+            <strong>The field is quiet.</strong>
+            <p>Create and arm a bounded capture mission to place sensors on the evidence map.</p>
+          </div>
+          <div class="stage-axis" aria-hidden="true">
+            <span>CLIENT BOUNDARY</span>
+            <span>TRANSIT / INFERENCE</span>
+            <span>TARGET BOUNDARY</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="chronology" aria-labelledby="chronology-title">
+        <header>
+          <div>
+            <p class="section-label">SYNCHRONIZED VIEW</p>
+            <h2 id="chronology-title">Evidence timeline</h2>
+          </div>
+          <output data-clock-uncertainty>clock uncertainty / —</output>
+        </header>
+        <div class="timeline-scroll">
+          <div class="timeline" data-timeline>
+            <div class="timeline-axis" aria-hidden="true"></div>
+            <div class="timeline-events" data-timeline-events></div>
+          </div>
+        </div>
+        <div class="timeline-scale" data-timeline-scale aria-hidden="true"></div>
+      </section>
+    </main>
+
+    <aside class="evidence-panel" aria-label="Evidence inspector">
+      <header class="panel-header">
+        <p class="section-label">EVIDENCE LEDGER</p>
+        <span data-ledger-count>00 EVENTS</span>
+      </header>
+
+      <section class="finding" aria-labelledby="finding-title">
+        <span class="finding-index">PRIMARY FINDING</span>
+        <h2 id="finding-title" data-finding-title>No conclusion yet.</h2>
+        <p data-finding-copy>Arc only briefs from evidence already present in a validated artifact.</p>
+      </section>
+
+      <div class="relationship-list" data-relationship-list></div>
+
+      <section class="event-inspector" aria-labelledby="event-title">
+        <div class="event-inspector-heading">
+          <h2 id="event-title">Selected receipt</h2>
+          <span data-selected-level>NONE</span>
+        </div>
+        <div class="receipt" data-event-detail>
+          <p>Select a sensor, route relationship, or event marker to inspect its evidence.</p>
+        </div>
+      </section>
+
+      <section class="event-stream" aria-labelledby="event-stream-title">
+        <div class="event-stream-heading">
+          <h2 id="event-stream-title">Ordered events</h2>
+          <button type="button" data-clear-filter>Show all</button>
+        </div>
+        <ol data-event-list></ol>
+      </section>
+    </aside>
+  </div>
+
+  <div class="connection-error" role="alert" data-connection-error hidden>
+    <strong>Arc is unreachable.</strong>
+    <span>We could not refresh the evidence snapshot. The last verified view remains on screen.</span>
+    <button type="button" data-retry>Retry connection</button>
+  </div>
+
+  <noscript>
+    <div class="noscript-message">
+      Mission Constellation requires JavaScript to draw its evidence graph.
+      The raw contract remains available at <a href="/api/v1/snapshot">/api/v1/snapshot</a>.
+    </div>
+  </noscript>
+</body>
+</html>
