@@ -97,9 +97,10 @@
           "Stable event and route handles",
           "Deterministic rootless replay",
           "Explicit capture loss and completeness telemetry",
+          "Experimental multi-host capture missions with explicit correlation uncertainty",
           "Machine-readable commands, schemas, limits, and invariants"
         ],
-        "keywords": "Linux packet tracing, eBPF observability, SKB tracing, packet drop debugging, XDP tracing, TC tracing, pwru alternative"
+        "keywords": "Linux packet tracing, eBPF observability, multi-host packet tracing, SKB tracing, packet drop debugging, XDP tracing, TC tracing, pwru alternative"
       }
     ]
   }
@@ -118,7 +119,7 @@
     <nav aria-label="Primary navigation">
       <a href="#flight">Trace a packet</a>
       <a href="#contract">Evidence contract</a>
-      <a href="#field-guides">Field guides</a>
+      <a href="#arc">Arc</a>
       <a class="nav-github" href="https://github.com/copyleftdev/skbx">GitHub <span aria-hidden="true">↗</span></a>
     </nav>
   </header>
@@ -329,6 +330,46 @@
       </div>
     </section>
 
+    <section class="arc-brief" id="arc" aria-labelledby="arc-brief-title">
+      <div class="arc-brief-copy">
+        <p class="section-kicker">missionq / 0.1.0 · experimental</p>
+        <h2 id="arc-brief-title">One packet.<br>Three sensors.<br><em>No invented middle.</em></h2>
+        <p>
+          Arc coordinates bounded <code>traceq</code> artifacts from the Linux
+          machines you control. Its Mission Constellation keeps direct
+          observations, cross-host correlations, candidates, and unknown space
+          visibly separate.
+        </p>
+        <dl class="arc-brief-facts">
+          <div><dt>Control</dt><dd>Outbound-only agents</dd></div>
+          <div><dt>Evidence</dt><dd>Immutable host artifacts</dd></div>
+          <div><dt>Claim</dt><dd>Observed ≠ correlated</dd></div>
+        </dl>
+        <div class="arc-brief-actions">
+          <a class="primary-link" href="arc.html">Enter mission control <span aria-hidden="true">→</span></a>
+          <a class="text-link" href="https://github.com/copyleftdev/skbx/blob/main/docs/arc.md">Read the Arc architecture <span aria-hidden="true">↗</span></a>
+        </div>
+      </div>
+      <a class="arc-preview" href="arc.html" aria-label="Explore the Arc Mission Constellation">
+        <span class="arc-preview-head">
+          <span>ARC / MISSION CONTROL</span>
+          <span><i></i> LOCAL / READY</span>
+        </span>
+        <img
+          src="assets/arc-mission-constellation.webp"
+          width="1440"
+          height="1000"
+          loading="lazy"
+          decoding="async"
+          alt="Arc Mission Constellation showing a website request across a developer laptop, edge gateway, and application host with a partial evidence finding">
+        <span class="arc-preview-foot">
+          <span>03 sensors</span>
+          <span>08 receipts</span>
+          <span>partial / loss 14</span>
+        </span>
+      </a>
+    </section>
+
     <section class="field-guide" id="field-guides" aria-labelledby="field-guide-title">
       <div class="field-guide-index" aria-hidden="true">
         <span>FIELD GUIDES / 02</span>
@@ -402,6 +443,7 @@
     </a>
     <p>Packet paths, with receipts.</p>
     <div>
+      <a href="arc.html">Arc</a>
       <a href="guides/debug-linux-packet-drops.html">Field guide</a>
       <a href="llms.txt">AI / crawler brief</a>
       <a href="https://github.com/copyleftdev/skbx/blob/main/LICENSE">AGPL-3.0</a>
