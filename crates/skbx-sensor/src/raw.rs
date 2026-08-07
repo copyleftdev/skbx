@@ -1,4 +1,4 @@
-use skbx_contract::Reliability;
+use skbx_contract::{KernelCpuLoss, Reliability};
 
 pub const READ_LEN_FAILED: u16 = 1 << 0;
 pub const READ_PROTOCOL_FAILED: u16 = 1 << 1;
@@ -485,23 +485,121 @@ pub struct KernelStats {
     pub reserve_failures: u64,
     pub read_failures: u64,
     pub filtered_events: u64,
+    /// Reserve failures the kernel could not file against a probe because the
+    /// probe-site map was full. Counted here rather than dropped so the
+    /// per-probe breakdown never has to be read as exhaustive.
+    pub unattributed_reserve_failures: u64,
 }
 
-impl KernelStats {
+/// Identifies the probe that failed to emit, mirroring `struct probe_site_key`
+/// in the BPF object. Exactly one of the two fields is set: a kernel-function
+/// probe carries its instruction pointer, a TC/XDP program probe its program id.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ProbeSiteKey {
+    pub function_ip: u64,
+    pub program_id: u32,
+    pub _pad: u32,
+}
+
+impl ProbeSiteKey {
+    pub const BYTE_LEN: usize = std::mem::size_of::<Self>();
+
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != Self::BYTE_LEN {
+            return None;
+        }
+        Some(Self {
+            function_ip: u64::from_ne_bytes(bytes[0..8].try_into().ok()?),
+            program_id: u32::from_ne_bytes(bytes[8..12].try_into().ok()?),
+            _pad: 0,
+        })
+    }
+}
+
+/// Reserve failures attributed to one probe, summed across CPUs.
+///
+/// The kernel keeps this per-CPU as well, but the emitted contract reports
+/// probe and CPU as two independent projections rather than their cross
+/// product: a probe-by-core matrix grows with both and answers a question
+/// nobody asked.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProbeSiteLoss {
+    pub site: ProbeSiteKey,
+    pub reserve_failures: u64,
+}
+
+/// Kernel counters as the per-CPU array actually holds them, indexed by CPU id.
+///
+/// The counters live in a `BPF_MAP_TYPE_PERCPU_ARRAY`, so the breakdown is free
+/// to carry — it is what the lookup already returns. Totalling it at readout
+/// threw away the only attribution the kernel side has for a lost observation.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KernelStatsByCpu {
+    per_cpu: Vec<KernelStats>,
+}
+
+impl KernelStatsByCpu {
+    /// `per_cpu` is ordered by CPU id, one entry per possible CPU.
+    pub fn new(per_cpu: Vec<KernelStats>) -> Self {
+        Self { per_cpu }
+    }
+
+    pub fn per_cpu(&self) -> &[KernelStats] {
+        &self.per_cpu
+    }
+
+    pub fn total(&self) -> KernelStats {
+        self.per_cpu
+            .iter()
+            .fold(KernelStats::default(), |mut total, stats| {
+                total.reserve_failures = total
+                    .reserve_failures
+                    .saturating_add(stats.reserve_failures);
+                total.read_failures = total.read_failures.saturating_add(stats.read_failures);
+                total.filtered_events = total.filtered_events.saturating_add(stats.filtered_events);
+                total.unattributed_reserve_failures = total
+                    .unattributed_reserve_failures
+                    .saturating_add(stats.unattributed_reserve_failures);
+                total
+            })
+    }
+
+    /// Only CPUs that lost something. A CPU that filtered events but lost none
+    /// is not loss, so it is omitted rather than reported as a hole.
+    pub fn loss_by_cpu(&self) -> Vec<KernelCpuLoss> {
+        self.per_cpu
+            .iter()
+            .enumerate()
+            .filter(|(_, stats)| stats.reserve_failures != 0 || stats.read_failures != 0)
+            .map(|(cpu, stats)| KernelCpuLoss {
+                cpu: u32::try_from(cpu).unwrap_or(u32::MAX),
+                reserve_failures: stats.reserve_failures,
+                read_failures: stats.read_failures,
+            })
+            .collect()
+    }
+
     pub fn into_reliability(
         self,
         recursion_misses: u64,
         decode_failures: u64,
         enrichment_failures: u64,
     ) -> Reliability {
+        let total = self.total();
         Reliability {
-            kernel_reserve_failures: self.reserve_failures,
-            kernel_read_failures: self.read_failures,
-            kernel_filtered_events: self.filtered_events,
+            kernel_reserve_failures: total.reserve_failures,
+            kernel_read_failures: total.read_failures,
+            kernel_filtered_events: total.filtered_events,
             kernel_recursion_misses: recursion_misses,
             userspace_decode_failures: decode_failures,
             userspace_enrichment_failures: enrichment_failures,
             output_failures: 0,
+            kernel_loss_by_cpu: self.loss_by_cpu(),
+            kernel_unattributed_reserve_failures: total.unattributed_reserve_failures,
+            // Filled in by the caller, which owns the symbol table needed to
+            // turn a probe site address into a function name.
+            kernel_loss_by_probe: Vec::new(),
         }
     }
 }
@@ -665,5 +763,116 @@ mod tests {
         assert_eq!(metadata.expect("metadata").values[0], 9);
         assert!(dumps.is_some());
         assert_eq!(program.expect("program").id, 43);
+    }
+
+    fn stats_by_cpu(per_cpu: &[(u64, u64, u64)]) -> KernelStatsByCpu {
+        KernelStatsByCpu::new(
+            per_cpu
+                .iter()
+                .map(
+                    |&(reserve_failures, read_failures, filtered_events)| KernelStats {
+                        reserve_failures,
+                        read_failures,
+                        filtered_events,
+                        unattributed_reserve_failures: 0,
+                    },
+                )
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn reliability_totals_still_match_the_per_cpu_breakdown() {
+        let stats = stats_by_cpu(&[(2, 0, 10), (0, 0, 40), (3, 1, 0)]);
+        let reliability = stats.into_reliability(0, 0, 0);
+
+        assert_eq!(reliability.kernel_reserve_failures, 5);
+        assert_eq!(reliability.kernel_read_failures, 1);
+        assert_eq!(reliability.kernel_filtered_events, 50);
+        assert_eq!(
+            reliability
+                .kernel_loss_by_cpu
+                .iter()
+                .map(|loss| loss.reserve_failures)
+                .sum::<u64>(),
+            reliability.kernel_reserve_failures
+        );
+    }
+
+    #[test]
+    fn loss_is_attributed_to_the_cpu_that_could_not_emit() {
+        let stats = stats_by_cpu(&[(0, 0, 0), (0, 0, 0), (7, 2, 0)]);
+
+        assert_eq!(
+            stats.loss_by_cpu(),
+            vec![KernelCpuLoss {
+                cpu: 2,
+                reserve_failures: 7,
+                read_failures: 2,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_cpu_that_only_filtered_is_not_reported_as_loss() {
+        // Filtering is the probe declining to emit, not a hole in the capture.
+        let stats = stats_by_cpu(&[(0, 0, 900), (0, 0, 12)]);
+
+        assert!(stats.loss_by_cpu().is_empty());
+        assert_eq!(stats.into_reliability(0, 0, 0).kernel_filtered_events, 912);
+    }
+
+    #[test]
+    fn unattributed_reserve_failures_total_across_cpus() {
+        let stats = KernelStatsByCpu::new(vec![
+            KernelStats {
+                reserve_failures: 5,
+                unattributed_reserve_failures: 2,
+                ..KernelStats::default()
+            },
+            KernelStats {
+                reserve_failures: 4,
+                unattributed_reserve_failures: 4,
+                ..KernelStats::default()
+            },
+        ]);
+
+        let reliability = stats.into_reliability(0, 0, 0);
+
+        assert_eq!(reliability.kernel_reserve_failures, 9);
+        assert_eq!(reliability.kernel_unattributed_reserve_failures, 6);
+        // The total is authoritative; attribution is only ever a subset of it.
+        assert!(
+            reliability.kernel_unattributed_reserve_failures <= reliability.kernel_reserve_failures
+        );
+    }
+
+    #[test]
+    fn probe_site_keys_decode_to_exactly_one_kind_of_site() {
+        let mut kernel = [0_u8; ProbeSiteKey::BYTE_LEN];
+        kernel[0..8].copy_from_slice(&0xffff_ffff_8123_4560_u64.to_ne_bytes());
+        let kernel = ProbeSiteKey::from_bytes(&kernel).expect("kernel site decodes");
+        assert_eq!(kernel.function_ip, 0xffff_ffff_8123_4560);
+        assert_eq!(kernel.program_id, 0);
+
+        let mut program = [0_u8; ProbeSiteKey::BYTE_LEN];
+        program[8..12].copy_from_slice(&77_u32.to_ne_bytes());
+        let program = ProbeSiteKey::from_bytes(&program).expect("program site decodes");
+        assert_eq!(program.function_ip, 0);
+        assert_eq!(program.program_id, 77);
+    }
+
+    #[test]
+    fn probe_site_key_rejects_a_wrong_sized_key() {
+        assert_eq!(ProbeSiteKey::BYTE_LEN, 16);
+        assert!(ProbeSiteKey::from_bytes(&[0_u8; 12]).is_none());
+    }
+
+    #[test]
+    fn a_lossless_capture_reports_an_empty_breakdown_not_a_missing_one() {
+        let reliability = stats_by_cpu(&[(0, 0, 0), (0, 0, 0)]).into_reliability(0, 0, 0);
+
+        assert!(reliability.complete());
+        assert!(reliability.kernel_loss_by_cpu.is_empty());
     }
 }

@@ -1,4 +1,4 @@
-use crate::{KernelStats, RawObservation};
+use crate::{KernelStats, KernelStatsByCpu, ProbeSiteKey, ProbeSiteLoss, RawObservation};
 use libbpf_rs::btf::{Btf, BtfType, TypeId};
 use libbpf_rs::query::{ProgInfoIter, ProgInfoQueryOptions, ProgramInfo};
 use libbpf_rs::{
@@ -161,6 +161,7 @@ pub struct LiveSensor {
     ring: NonNull<libbpf_rs::libbpf_sys::ring_buffer>,
     ring_state: Box<RingState>,
     telemetry: MapHandle,
+    probe_site_loss: MapHandle,
     stack_traces: MapHandle,
     _links: Vec<Link>,
     _object: Object,
@@ -548,6 +549,7 @@ impl LiveSensor {
         }
         let events = map_handle(&object, "events")?;
         let telemetry = map_handle(&object, "telemetry")?;
+        let probe_site_loss = map_handle(&object, "probe_site_loss")?;
         let stack_traces = map_handle(&object, "stack_traces")?;
         let mut ring_state = Box::<RingState>::default();
         let ring = create_ring(&events, ring_state.as_mut())?;
@@ -556,6 +558,7 @@ impl LiveSensor {
             ring,
             ring_state,
             telemetry,
+            probe_site_loss,
             stack_traces,
             _links: links,
             _object: object,
@@ -581,14 +584,16 @@ impl LiveSensor {
         Ok(self.ring_state.events.drain(..).collect())
     }
 
-    pub fn stats(&self) -> Result<KernelStats, LiveError> {
+    /// Values come back one per possible CPU in CPU-id order, and are kept that
+    /// way. Totalling here would discard which core failed to emit.
+    pub fn stats(&self) -> Result<KernelStatsByCpu, LiveError> {
         let key = 0_u32.to_ne_bytes();
         let values = self
             .telemetry
             .lookup_percpu(&key, MapFlags::ANY)
             .map_err(|error| LiveError::Map(error.to_string()))?
             .ok_or_else(|| LiveError::Map("telemetry key 0 not found".into()))?;
-        let mut total = KernelStats::default();
+        let mut per_cpu = Vec::with_capacity(values.len());
         for value in values {
             let Some(stats) = kernel_stats_from_bytes(&value) else {
                 return Err(LiveError::Map(format!(
@@ -596,13 +601,57 @@ impl LiveSensor {
                     value.len()
                 )));
             };
-            total.reserve_failures = total
-                .reserve_failures
-                .saturating_add(stats.reserve_failures);
-            total.read_failures = total.read_failures.saturating_add(stats.read_failures);
-            total.filtered_events = total.filtered_events.saturating_add(stats.filtered_events);
+            per_cpu.push(stats);
         }
-        Ok(total)
+        Ok(KernelStatsByCpu::new(per_cpu))
+    }
+
+    /// Reserve failures per probe, summed across CPUs.
+    ///
+    /// Ordered by loss descending then by site, because hash iteration order is
+    /// not stable and a capture footer has to be reproducible.
+    pub fn probe_loss(&self) -> Result<Vec<ProbeSiteLoss>, LiveError> {
+        let mut losses = Vec::new();
+        for key in self.probe_site_loss.keys() {
+            let Some(site) = ProbeSiteKey::from_bytes(&key) else {
+                return Err(LiveError::Map(format!(
+                    "probe site key has unexpected size {}",
+                    key.len()
+                )));
+            };
+            let Some(values) = self
+                .probe_site_loss
+                .lookup_percpu(&key, MapFlags::ANY)
+                .map_err(|error| LiveError::Map(error.to_string()))?
+            else {
+                // The key was evicted between iterating and reading it. The
+                // global counter already covers this failure, so skipping the
+                // attribution loses detail, not the fact of the loss.
+                continue;
+            };
+            let mut reserve_failures = 0_u64;
+            for value in values {
+                let bytes: [u8; 8] = value.as_slice().try_into().map_err(|_| {
+                    LiveError::Map(format!(
+                        "probe site value has unexpected size {}",
+                        value.len()
+                    ))
+                })?;
+                reserve_failures = reserve_failures.saturating_add(u64::from_ne_bytes(bytes));
+            }
+            if reserve_failures != 0 {
+                losses.push(ProbeSiteLoss {
+                    site,
+                    reserve_failures,
+                });
+            }
+        }
+        losses.sort_by(|a, b| {
+            b.reserve_failures
+                .cmp(&a.reserve_failures)
+                .then_with(|| a.site.cmp(&b.site))
+        });
+        Ok(losses)
     }
 
     pub fn decode_failures(&self) -> u64 {
@@ -970,6 +1019,7 @@ fn kernel_stats_from_bytes(bytes: &[u8]) -> Option<KernelStats> {
         reserve_failures: u64::from_ne_bytes(bytes[0..8].try_into().ok()?),
         read_failures: u64::from_ne_bytes(bytes[8..16].try_into().ok()?),
         filtered_events: u64::from_ne_bytes(bytes[16..24].try_into().ok()?),
+        unattributed_reserve_failures: u64::from_ne_bytes(bytes[24..32].try_into().ok()?),
     })
 }
 
