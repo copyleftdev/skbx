@@ -6,7 +6,7 @@ use libbpf_rs::{
     ProgramType,
 };
 use skbx_contract::{BpfProgramKind, BpfProgramRef, ProbeSpec};
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::{OsStr, c_void};
 use std::mem;
 use std::os::fd::{AsFd, AsRawFd};
@@ -610,8 +610,15 @@ impl LiveSensor {
     ///
     /// Ordered by loss descending then by site, because hash iteration order is
     /// not stable and a capture footer has to be reproducible.
+    ///
+    /// Collected through a map keyed by site rather than pushed to a list.
+    /// `keys()` is `bpf_map_get_next_key()` iteration, which may hand back a
+    /// key more than once when entries are inserted while it runs — and probes
+    /// keep firing throughout. A list would turn each revisit into a duplicate
+    /// entry and overstate that probe's share; keying by site makes a revisit
+    /// simply overwrite an equivalent reading.
     pub fn probe_loss(&self) -> Result<Vec<ProbeSiteLoss>, LiveError> {
-        let mut losses = Vec::new();
+        let mut losses = BTreeMap::new();
         for key in self.probe_site_loss.keys() {
             let Some(site) = ProbeSiteKey::from_bytes(&key) else {
                 return Err(LiveError::Map(format!(
@@ -640,12 +647,16 @@ impl LiveSensor {
                 reserve_failures = reserve_failures.saturating_add(u64::from_ne_bytes(bytes));
             }
             if reserve_failures != 0 {
-                losses.push(ProbeSiteLoss {
-                    site,
-                    reserve_failures,
-                });
+                losses.insert(site, reserve_failures);
             }
         }
+        let mut losses: Vec<ProbeSiteLoss> = losses
+            .into_iter()
+            .map(|(site, reserve_failures)| ProbeSiteLoss {
+                site,
+                reserve_failures,
+            })
+            .collect();
         losses.sort_by(|a, b| {
             b.reserve_failures
                 .cmp(&a.reserve_failures)

@@ -1,4 +1,4 @@
-use skbx_contract::{KernelCpuLoss, Reliability};
+use skbx_contract::{KernelCpuLoss, KernelProbeLoss, Reliability};
 
 pub const READ_LEN_FAILED: u16 = 1 << 0;
 pub const READ_PROTOCOL_FAILED: u16 = 1 << 1;
@@ -580,11 +580,16 @@ impl KernelStatsByCpu {
             .collect()
     }
 
+    /// `loss_by_probe` is a parameter rather than a field the caller patches in
+    /// afterwards: leaving it to the caller means a future third call site can
+    /// drop the attribution silently, and a dropped breakdown reads exactly
+    /// like a capture that lost nothing per probe.
     pub fn into_reliability(
         self,
         recursion_misses: u64,
         decode_failures: u64,
         enrichment_failures: u64,
+        loss_by_probe: Vec<KernelProbeLoss>,
     ) -> Reliability {
         let total = self.total();
         Reliability {
@@ -597,9 +602,9 @@ impl KernelStatsByCpu {
             output_failures: 0,
             kernel_loss_by_cpu: self.loss_by_cpu(),
             kernel_unattributed_reserve_failures: total.unattributed_reserve_failures,
-            // Filled in by the caller, which owns the symbol table needed to
-            // turn a probe site address into a function name.
-            kernel_loss_by_probe: Vec::new(),
+            // Resolved by the caller, which owns the symbol table needed to turn
+            // a probe site address into a function name.
+            kernel_loss_by_probe: loss_by_probe,
         }
     }
 }
