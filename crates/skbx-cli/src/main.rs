@@ -1164,13 +1164,13 @@ fn capture(
                             // breakdown larger than the total it refines.
                             let probes = kernel_loss_by_probe(&sensor, &symbols)?;
                             let skbs = kernel_loss_by_skb(&sensor, &symbols)?;
-                            let mut current = sensor.stats()?.into_reliability(
+                            let current = sensor.stats()?.into_reliability(
                                 sensor.recursion_misses()?,
                                 sensor.decode_failures(),
                                 sensor.enrichment_failures(),
+                                probes,
+                                skbs,
                             );
-                            current.kernel_loss_by_probe = probes;
-                            current.kernel_loss_by_skb = skbs;
                             let segment = reliability_delta(&current, &reliability_checkpoint);
                             reliability_checkpoint = current;
                             Ok(segment)
@@ -1186,13 +1186,13 @@ fn capture(
         let probes = kernel_loss_by_probe(&sensor, &symbols)?;
         let skbs = kernel_loss_by_skb(&sensor, &symbols)?;
         let stats = sensor.stats()?;
-        let mut reliability = stats.into_reliability(
+        let reliability = stats.into_reliability(
             sensor.recursion_misses()?,
             sensor.decode_failures(),
             sensor.enrichment_failures(),
+            probes,
+            skbs,
         );
-        reliability.kernel_loss_by_probe = probes;
-        reliability.kernel_loss_by_skb = skbs;
         let complete = reliability.complete();
         let end = CaptureEnd {
             schema: CONTRACT_VERSION.into(),
