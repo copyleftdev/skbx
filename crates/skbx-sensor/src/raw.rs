@@ -489,6 +489,10 @@ pub struct KernelStats {
     /// probe-site map was full. Counted here rather than dropped so the
     /// per-probe breakdown never has to be read as exhaustive.
     pub unattributed_reserve_failures: u64,
+    /// Losses the kernel could not file against a packet because the per-skb
+    /// table was full. While this is zero the per-skb table is exhaustive, and
+    /// a packet missing from it provably lost nothing.
+    pub unattributed_skb_losses: u64,
 }
 
 /// Identifies the probe that failed to emit, mirroring `struct probe_site_key`
@@ -529,6 +533,40 @@ pub struct ProbeSiteLoss {
     pub reserve_failures: u64,
 }
 
+/// Mirrors `struct skb_loss_key` in the BPF object: which observation of which
+/// packet was lost. `identity` is the same value stamped into emitted records,
+/// so it joins directly against the chain a replay reconstructs.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SkbLossKey {
+    pub identity: u64,
+    pub site: ProbeSiteKey,
+}
+
+impl SkbLossKey {
+    pub const BYTE_LEN: usize = 24;
+
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != Self::BYTE_LEN {
+            return None;
+        }
+        Some(Self {
+            identity: u64::from_ne_bytes(bytes[0..8].try_into().ok()?),
+            site: ProbeSiteKey {
+                function_ip: u64::from_ne_bytes(bytes[8..16].try_into().ok()?),
+                program_id: u32::from_ne_bytes(bytes[16..20].try_into().ok()?),
+                _pad: 0,
+            },
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SkbLoss {
+    pub key: SkbLossKey,
+    pub reserve_failures: u64,
+}
+
 /// Kernel counters as the per-CPU array actually holds them, indexed by CPU id.
 ///
 /// The counters live in a `BPF_MAP_TYPE_PERCPU_ARRAY`, so the breakdown is free
@@ -561,6 +599,9 @@ impl KernelStatsByCpu {
                 total.unattributed_reserve_failures = total
                     .unattributed_reserve_failures
                     .saturating_add(stats.unattributed_reserve_failures);
+                total.unattributed_skb_losses = total
+                    .unattributed_skb_losses
+                    .saturating_add(stats.unattributed_skb_losses);
                 total
             })
     }
@@ -597,9 +638,11 @@ impl KernelStatsByCpu {
             output_failures: 0,
             kernel_loss_by_cpu: self.loss_by_cpu(),
             kernel_unattributed_reserve_failures: total.unattributed_reserve_failures,
+            kernel_skb_loss_unattributed: total.unattributed_skb_losses,
             // Filled in by the caller, which owns the symbol table needed to
             // turn a probe site address into a function name.
             kernel_loss_by_probe: Vec::new(),
+            kernel_loss_by_skb: Vec::new(),
         }
     }
 }
@@ -775,6 +818,7 @@ mod tests {
                         read_failures,
                         filtered_events,
                         unattributed_reserve_failures: 0,
+                        unattributed_skb_losses: 0,
                     },
                 )
                 .collect(),
