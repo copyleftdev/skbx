@@ -26,6 +26,39 @@ The footer carries kernel loss, user-space decode failures, output failures
 and the stop reason. This prevents a partial trace from silently looking
 authoritative.
 
+Kernel loss is reported as a total plus two independent breakdowns, not their
+cross product. `kernel_loss_by_cpu` attributes a hole to the core it happened
+on; the kernel keeps those counters in a per-CPU array, so that view costs
+nothing to carry. `kernel_loss_by_probe` attributes it to the probe that could
+not emit — the kernel function, or the TC/XDP program id — which is what names
+the leg of the path a hole belongs to. Only CPUs and probes that lost something
+appear, and an empty array positively states that none did.
+
+The per-probe attribution is bounded by a fixed-size map. When a probe plan
+overflows it, the surplus lands in `kernel_unattributed_reserve_failures`
+rather than being misfiled against another probe. The breakdown is also a
+separate map read from the totals, taken while probes are still firing, so
+failures landing between the two reads are counted without being attributed.
+The kernel bumps the total before the attribution and userspace reads them in
+the opposite order, which keeps both effects pointing the same way:
+`kernel_loss_by_probe` undercounts and never exceeds
+`kernel_reserve_failures`, which remains the only authoritative total.
+
+A rotated segment footer is the exception: it holds the difference between two
+checkpoints of two separately sampled series, so a single segment's per-probe
+breakdown can exceed that segment's own total by however far the earlier
+checkpoint lagged. Measured values are reported rather than clamped, and the
+undercount still holds across all segments summed together.
+
+The per-CPU breakdown has no such gap — it comes from the same map read as the
+totals, so it sums to `kernel_reserve_failures` exactly, in whole captures and
+in segments alike.
+
+A hole that is attributed to a probe still says only that this probe failed to
+emit at least once. It does not identify which packet lost that observation, so
+`complete: false` continues to downgrade every absence in the capture — the
+attribution narrows where to look, it does not restore the absence as evidence.
+
 ## Pipeline
 
 ```text
