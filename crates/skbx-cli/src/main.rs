@@ -5,8 +5,9 @@ use skbx_contract::{
     BpfMapOperation, BpfMapOperationKind, BpfProgramAction, BpfProgramKind, BpfProgramPhase,
     BpfProgramRef, BtfDump, CONTRACT_VERSION, CaptureEnd, CaptureFilters, CaptureLimits,
     CaptureStart, Describe, Envelope, EventAssociation, FunctionRef, KernelCpuLoss,
-    KernelProbeLoss, MatchOrigin, MetadataEncoding, MetadataScalar, MetadataValue, PacketMeta,
-    PacketTuple, PresentedTimestamp, Reliability, StopReason, TimestampMode, TraceEvent,
+    KernelProbeLoss, KernelSkbLoss, MatchOrigin, MetadataEncoding, MetadataScalar, MetadataValue,
+    PacketMeta, PacketTuple, PresentedTimestamp, Reliability, StopReason, TimestampMode,
+    TraceEvent,
 };
 use skbx_core::{
     BoundedMap, DEFAULT_BTF_PATH, DropReasonTable, SymbolTable, build_dynamic_probe_plan,
@@ -14,7 +15,7 @@ use skbx_core::{
     ensure_btf_dump_support, event_handle, explain_with_context, replay, resolve_skb_filter,
     resolve_skb_metadata, resolve_xdp_filter, resolve_xdp_metadata,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -570,6 +571,28 @@ fn run(cli: Cli) -> Result<u8> {
                         println!(
                             "Kernel loss unattributed: reserve={} (probe-site map full; per-probe list undercounts)",
                             summary.reliability.kernel_unattributed_reserve_failures
+                        );
+                    }
+                    let affected = summary
+                        .reliability
+                        .kernel_loss_by_skb
+                        .iter()
+                        .map(|loss| loss.skb.as_str())
+                        .collect::<BTreeSet<_>>()
+                        .len();
+                    if summary.reliability.loss_is_fully_attributed() {
+                        println!(
+                            "Absence is evidence: every loss was filed against a packet, so any packet not among the {affected} affected provably lost nothing"
+                        );
+                        if summary.skbs_lost_entirely != 0 {
+                            println!(
+                                "Packets lost entirely: {} (every observation dropped; absent from the {} packets observed above)",
+                                summary.skbs_lost_entirely, summary.distinct_skbs
+                            );
+                        }
+                    } else if !summary.complete {
+                        println!(
+                            "Absence is not evidence: loss remains that no packet can be cleared of"
                         );
                     }
                 }
@@ -1140,11 +1163,13 @@ fn capture(
                             // be attributed without being counted, leaving the
                             // breakdown larger than the total it refines.
                             let probes = kernel_loss_by_probe(&sensor, &symbols)?;
+                            let skbs = kernel_loss_by_skb(&sensor, &symbols)?;
                             let current = sensor.stats()?.into_reliability(
                                 sensor.recursion_misses()?,
                                 sensor.decode_failures(),
                                 sensor.enrichment_failures(),
                                 probes,
+                                skbs,
                             );
                             let segment = reliability_delta(&current, &reliability_checkpoint);
                             reliability_checkpoint = current;
@@ -1159,12 +1184,14 @@ fn capture(
         // Attribution before total, so the breakdown can only ever undercount
         // the number it refines. See the segment boundary above.
         let probes = kernel_loss_by_probe(&sensor, &symbols)?;
+        let skbs = kernel_loss_by_skb(&sensor, &symbols)?;
         let stats = sensor.stats()?;
         let reliability = stats.into_reliability(
             sensor.recursion_misses()?,
             sensor.decode_failures(),
             sensor.enrichment_failures(),
             probes,
+            skbs,
         );
         let complete = reliability.complete();
         let end = CaptureEnd {
@@ -1728,7 +1755,48 @@ fn reliability_delta(current: &Reliability, previous: &Reliability) -> Reliabili
         kernel_unattributed_reserve_failures: current
             .kernel_unattributed_reserve_failures
             .saturating_sub(previous.kernel_unattributed_reserve_failures),
+        kernel_loss_by_skb: kernel_loss_by_skb_delta(
+            &current.kernel_loss_by_skb,
+            &previous.kernel_loss_by_skb,
+        ),
+        kernel_skb_loss_unattributed: current
+            .kernel_skb_loss_unattributed
+            .saturating_sub(previous.kernel_skb_loss_unattributed),
     }
+}
+
+/// Matched on packet identity and probe together, since one packet can lose
+/// observations at several probes and each is its own ledger line.
+fn kernel_loss_by_skb_delta(
+    current: &[KernelSkbLoss],
+    previous: &[KernelSkbLoss],
+) -> Vec<KernelSkbLoss> {
+    let site = |loss: &KernelSkbLoss| {
+        (
+            loss.skb.clone(),
+            loss.function
+                .as_ref()
+                .map(|function| function.address.clone()),
+            loss.program_id,
+        )
+    };
+    let mut segment: Vec<KernelSkbLoss> = current
+        .iter()
+        .filter_map(|now| {
+            let before = previous.iter().find(|earlier| site(earlier) == site(now));
+            let reserve_failures = now
+                .reserve_failures
+                .saturating_sub(before.map_or(0, |earlier| earlier.reserve_failures));
+            (reserve_failures != 0).then(|| KernelSkbLoss {
+                skb: now.skb.clone(),
+                function: now.function.clone(),
+                program_id: now.program_id,
+                reserve_failures,
+            })
+        })
+        .collect();
+    segment.sort_by_key(site);
+    segment
 }
 
 /// Resolves each losing probe site to a name. A kernel site carries its
@@ -1747,6 +1815,30 @@ fn kernel_loss_by_probe(
                 symbol: symbols.resolve(loss.site.function_ip).map(str::to_owned),
             }),
             program_id: (loss.site.program_id != 0).then_some(loss.site.program_id),
+            reserve_failures: loss.reserve_failures,
+        })
+        .collect())
+}
+
+/// Resolves each lost observation to the packet and probe it belonged to. The
+/// identity is formatted exactly as events format theirs, so a reader can join
+/// this against a replayed chain without reformatting either side.
+fn kernel_loss_by_skb(
+    sensor: &skbx_sensor::LiveSensor,
+    symbols: &SymbolTable,
+) -> Result<Vec<KernelSkbLoss>> {
+    Ok(sensor
+        .skb_loss()?
+        .into_iter()
+        .map(|loss| KernelSkbLoss {
+            skb: format!("{:#x}", loss.key.identity),
+            function: (loss.key.site.function_ip != 0).then(|| FunctionRef {
+                address: format!("{:#x}", loss.key.site.function_ip),
+                symbol: symbols
+                    .resolve(loss.key.site.function_ip)
+                    .map(str::to_owned),
+            }),
+            program_id: (loss.key.site.program_id != 0).then_some(loss.key.site.program_id),
             reserve_failures: loss.reserve_failures,
         })
         .collect())

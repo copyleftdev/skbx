@@ -1,4 +1,6 @@
-use crate::{KernelStats, KernelStatsByCpu, ProbeSiteKey, ProbeSiteLoss, RawObservation};
+use crate::{
+    KernelStats, KernelStatsByCpu, ProbeSiteKey, ProbeSiteLoss, RawObservation, SkbLoss, SkbLossKey,
+};
 use libbpf_rs::btf::{Btf, BtfType, TypeId};
 use libbpf_rs::query::{ProgInfoIter, ProgInfoQueryOptions, ProgramInfo};
 use libbpf_rs::{
@@ -162,6 +164,7 @@ pub struct LiveSensor {
     ring_state: Box<RingState>,
     telemetry: MapHandle,
     probe_site_loss: MapHandle,
+    skb_loss: MapHandle,
     stack_traces: MapHandle,
     _links: Vec<Link>,
     _object: Object,
@@ -550,6 +553,7 @@ impl LiveSensor {
         let events = map_handle(&object, "events")?;
         let telemetry = map_handle(&object, "telemetry")?;
         let probe_site_loss = map_handle(&object, "probe_site_loss")?;
+        let skb_loss = map_handle(&object, "skb_loss")?;
         let stack_traces = map_handle(&object, "stack_traces")?;
         let mut ring_state = Box::<RingState>::default();
         let ring = create_ring(&events, ring_state.as_mut())?;
@@ -559,6 +563,7 @@ impl LiveSensor {
             ring_state,
             telemetry,
             probe_site_loss,
+            skb_loss,
             stack_traces,
             _links: links,
             _object: object,
@@ -663,6 +668,53 @@ impl LiveSensor {
                 .then_with(|| a.site.cmp(&b.site))
         });
         Ok(losses)
+    }
+
+    /// Which observation of which packet was lost.
+    ///
+    /// Ordered by packet, then by the probe that lost it, so the footer reads
+    /// as a per-packet ledger and stays reproducible across runs.
+    ///
+    /// Keyed rather than pushed, for the same reason as `probe_loss`:
+    /// `bpf_map_get_next_key()` iteration can revisit a key when entries are
+    /// inserted while it runs. Here a duplicate would be worse than a
+    /// miscount — the same packet would appear twice in the ledger a reader
+    /// consults to decide whether that packet lost anything.
+    pub fn skb_loss(&self) -> Result<Vec<SkbLoss>, LiveError> {
+        let mut losses = BTreeMap::new();
+        for key in self.skb_loss.keys() {
+            let Some(decoded) = SkbLossKey::from_bytes(&key) else {
+                return Err(LiveError::Map(format!(
+                    "skb loss key has unexpected size {}",
+                    key.len()
+                )));
+            };
+            let Some(value) = self
+                .skb_loss
+                .lookup(&key, MapFlags::ANY)
+                .map_err(|error| LiveError::Map(error.to_string()))?
+            else {
+                continue;
+            };
+            let bytes: [u8; 8] = value.as_slice().try_into().map_err(|_| {
+                LiveError::Map(format!(
+                    "skb loss value has unexpected size {}",
+                    value.len()
+                ))
+            })?;
+            let reserve_failures = u64::from_ne_bytes(bytes);
+            if reserve_failures != 0 {
+                losses.insert(decoded, reserve_failures);
+            }
+        }
+        // BTreeMap iteration is already the key order this ledger wants.
+        Ok(losses
+            .into_iter()
+            .map(|(key, reserve_failures)| SkbLoss {
+                key,
+                reserve_failures,
+            })
+            .collect())
     }
 
     pub fn decode_failures(&self) -> u64 {
@@ -1031,6 +1083,7 @@ fn kernel_stats_from_bytes(bytes: &[u8]) -> Option<KernelStats> {
         read_failures: u64::from_ne_bytes(bytes[8..16].try_into().ok()?),
         filtered_events: u64::from_ne_bytes(bytes[16..24].try_into().ok()?),
         unattributed_reserve_failures: u64::from_ne_bytes(bytes[24..32].try_into().ok()?),
+        unattributed_skb_losses: u64::from_ne_bytes(bytes[32..40].try_into().ok()?),
     })
 }
 

@@ -212,6 +212,16 @@ pub fn replay<R: BufRead>(reader: R) -> Result<TraceSummary, ReplayError> {
         None => (false, Reliability::default(), None),
     };
 
+    // A packet can appear in the loss ledger without appearing in the capture:
+    // that is precisely the packet whose every observation was dropped.
+    let skbs_lost_entirely = reliability
+        .kernel_loss_by_skb
+        .iter()
+        .map(|loss| &loss.skb)
+        .filter(|skb| !skbs.contains(*skb))
+        .collect::<BTreeSet<_>>()
+        .len();
+
     let routes = routes.expect("start and route state are initialized together");
     let route_evictions = routes.evictions();
     let (route_patterns, route_consensus) =
@@ -224,6 +234,7 @@ pub fn replay<R: BufRead>(reader: R) -> Result<TraceSummary, ReplayError> {
         complete,
         events: observed_events,
         distinct_skbs: skbs.len(),
+        skbs_lost_entirely,
         functions,
         processes,
         route_patterns,
@@ -459,6 +470,33 @@ pub struct Explanation {
     pub target: TraceEvent,
     pub same_skb_evidence: Vec<TraceEvent>,
     pub truncated: bool,
+    /// Whether the evidence below can be read as the whole story for this
+    /// packet. See [`SkbEvidence`].
+    #[serde(default)]
+    pub evidence: SkbEvidence,
+}
+
+/// Whether a function missing from a packet's evidence was never reached, or
+/// merely never observed.
+///
+/// This is the question a capture normally cannot answer. It becomes answerable
+/// only when every lost observation in the capture was filed against a specific
+/// packet, which lets a packet with no filed losses be cleared outright.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "verdict", rename_all = "snake_case")]
+pub enum SkbEvidence {
+    /// Nothing was lost for this packet, and every loss elsewhere in the
+    /// capture was accounted for. A function absent from the evidence was not
+    /// reached — this is the one verdict under which absence is evidence.
+    Complete,
+    /// This packet lost observations. Its chain has holes, so an absent
+    /// function may have run unobserved.
+    Lost { observations_lost: u64 },
+    /// The capture holds losses that could not be filed against any packet, so
+    /// no packet can be cleared — including this one. Also the verdict when no
+    /// footer was read.
+    #[default]
+    Unknown,
 }
 
 pub fn explain<R: BufRead>(reader: R, handle: &str) -> Result<Explanation, ReplayError> {
@@ -505,7 +543,117 @@ pub fn explain<R: BufRead>(reader: R, handle: &str) -> Result<Explanation, Repla
         target,
         same_skb_evidence: events.into(),
         truncated,
+        // The single-reader pass may stop before the footer, so it cannot rule
+        // on completeness. explain_with_context reads the whole stream and
+        // replaces this.
+        evidence: SkbEvidence::Unknown,
     })
+}
+
+#[cfg(test)]
+mod skb_evidence_tests {
+    use super::*;
+    use skbx_contract::{FunctionRef, KernelSkbLoss};
+
+    fn footer(reliability: Reliability) -> CaptureEnd {
+        CaptureEnd {
+            schema: CONTRACT_VERSION.into(),
+            capture_id: "c".into(),
+            events: 1,
+            complete: reliability.complete(),
+            reliability,
+            stop_reason: StopReason::Duration,
+            segment: None,
+        }
+    }
+
+    fn loss(skb: &str, count: u64) -> KernelSkbLoss {
+        KernelSkbLoss {
+            skb: skb.into(),
+            function: Some(FunctionRef {
+                address: "0xffffffff81234560".into(),
+                symbol: Some("nf_hook_slow".into()),
+            }),
+            program_id: None,
+            reserve_failures: count,
+        }
+    }
+
+    #[test]
+    fn a_packet_with_no_filed_loss_is_cleared_even_when_the_capture_lost_events() {
+        // The capture as a whole is incomplete, but every hole belongs to a
+        // known packet, so a different packet's absences remain evidence.
+        let end = footer(Reliability {
+            kernel_reserve_failures: 5,
+            kernel_loss_by_skb: vec![loss("0xaaa", 5)],
+            ..Reliability::default()
+        });
+
+        assert!(!end.complete);
+        assert_eq!(skb_evidence(Some(&end), "0xbbb"), SkbEvidence::Complete);
+        assert_eq!(
+            skb_evidence(Some(&end), "0xaaa"),
+            SkbEvidence::Lost {
+                observations_lost: 5
+            }
+        );
+    }
+
+    #[test]
+    fn an_unfiled_loss_makes_every_packet_unknown() {
+        let end = footer(Reliability {
+            kernel_reserve_failures: 6,
+            kernel_loss_by_skb: vec![loss("0xaaa", 5)],
+            kernel_skb_loss_unattributed: 1,
+            ..Reliability::default()
+        });
+
+        assert_eq!(skb_evidence(Some(&end), "0xbbb"), SkbEvidence::Unknown);
+        assert_eq!(skb_evidence(Some(&end), "0xaaa"), SkbEvidence::Unknown);
+    }
+
+    #[test]
+    fn output_loss_makes_every_packet_unknown() {
+        // An output failure discards a record the kernel already handed over,
+        // so no packet owns it and none can be cleared.
+        let end = footer(Reliability {
+            output_failures: 1,
+            ..Reliability::default()
+        });
+
+        assert_eq!(skb_evidence(Some(&end), "0xaaa"), SkbEvidence::Unknown);
+    }
+
+    #[test]
+    fn a_lossless_capture_clears_every_packet() {
+        let end = footer(Reliability::default());
+
+        assert!(end.complete);
+        assert_eq!(skb_evidence(Some(&end), "0xaaa"), SkbEvidence::Complete);
+    }
+
+    #[test]
+    fn a_missing_footer_never_claims_completeness() {
+        assert_eq!(skb_evidence(None, "0xaaa"), SkbEvidence::Unknown);
+    }
+}
+
+/// Rules on whether one packet's chain can be read as complete.
+///
+/// Deliberately conservative in both directions it can be wrong: no footer, or
+/// any loss the capture could not file against a packet, yields `Unknown`
+/// rather than a guess.
+fn skb_evidence(footer: Option<&CaptureEnd>, skb: &str) -> SkbEvidence {
+    let Some(footer) = footer else {
+        return SkbEvidence::Unknown;
+    };
+    if !footer.reliability.loss_is_fully_attributed() {
+        return SkbEvidence::Unknown;
+    }
+    match footer.reliability.losses_for_skb(skb) {
+        0 => SkbEvidence::Complete,
+        observations_lost => SkbEvidence::Lost { observations_lost },
+    }
 }
 
 /// Explain with a reopenable path, returning bounded same-SKB evidence.
@@ -526,6 +674,7 @@ pub fn explain_with_context<R1: BufRead, R2: BufRead>(
     let target_skb = event_identity(&explanation.target).to_owned();
     let mut evidence = Vec::new();
     let mut matching = 0_usize;
+    let mut footer: Option<CaptureEnd> = None;
 
     for (index, line) in second.lines().enumerate() {
         let line = line?;
@@ -537,17 +686,22 @@ pub fn explain_with_context<R1: BufRead, R2: BufRead>(
                 line: index + 1,
                 source,
             })?;
-        if let Envelope::Event(event) = envelope {
-            if event_identity(&event) == target_skb {
-                matching += 1;
-                if evidence.len() < MAX_EXPLAIN_NEIGHBORS {
-                    evidence.push(event);
+        match envelope {
+            Envelope::Event(event) => {
+                if event_identity(&event) == target_skb {
+                    matching += 1;
+                    if evidence.len() < MAX_EXPLAIN_NEIGHBORS {
+                        evidence.push(event);
+                    }
                 }
             }
+            Envelope::CaptureEnd(end) => footer = Some(end),
+            Envelope::CaptureStart(_) => {}
         }
     }
     explanation.truncated = matching > evidence.len();
     explanation.same_skb_evidence = evidence;
+    explanation.evidence = skb_evidence(footer.as_ref(), &target_skb);
     Ok(explanation)
 }
 
@@ -704,6 +858,64 @@ mod tests {
             );
         }
         lines.join("\n")
+    }
+
+    /// Replaces the fixture footer with one carrying the given per-packet loss.
+    fn fixture_with_skb_loss(losses: &[(&str, u64)], unattributed: u64) -> String {
+        let mut lines: Vec<String> = fixture(true).lines().map(str::to_owned).collect();
+        let reliability = Reliability {
+            kernel_reserve_failures: losses.iter().map(|(_, n)| n).sum::<u64>() + unattributed,
+            kernel_skb_loss_unattributed: unattributed,
+            kernel_loss_by_skb: losses
+                .iter()
+                .map(|(skb, n)| skbx_contract::KernelSkbLoss {
+                    skb: (*skb).into(),
+                    function: Some(FunctionRef {
+                        address: "0x2".into(),
+                        symbol: Some("ip_rcv".into()),
+                    }),
+                    program_id: None,
+                    reserve_failures: *n,
+                })
+                .collect(),
+            ..Reliability::default()
+        };
+        let last = lines.len() - 1;
+        lines[last] = serde_json::to_string(&Envelope::CaptureEnd(CaptureEnd {
+            schema: CONTRACT_VERSION.into(),
+            capture_id: "c1".into(),
+            events: 1,
+            complete: reliability.complete(),
+            reliability,
+            stop_reason: StopReason::Duration,
+            segment: None,
+        }))
+        .unwrap();
+        lines.join("\n")
+    }
+
+    #[test]
+    fn a_packet_that_lost_every_observation_is_counted_but_never_observed() {
+        // 0x1 is the only packet in the stream. 0x99 appears solely in the
+        // footer's ledger, which is what a wholly dropped chain looks like:
+        // before per-packet attribution it left no trace at all.
+        let summary = replay(Cursor::new(fixture_with_skb_loss(
+            &[("0x1", 2), ("0x99", 5)],
+            0,
+        )))
+        .unwrap();
+
+        assert_eq!(summary.distinct_skbs, 1);
+        assert_eq!(summary.skbs_lost_entirely, 1);
+        assert!(summary.reliability.loss_is_fully_attributed());
+    }
+
+    #[test]
+    fn an_observed_packet_is_never_counted_as_lost_entirely() {
+        let summary = replay(Cursor::new(fixture_with_skb_loss(&[("0x1", 2)], 0))).unwrap();
+
+        assert_eq!(summary.distinct_skbs, 1);
+        assert_eq!(summary.skbs_lost_entirely, 0);
     }
 
     #[test]

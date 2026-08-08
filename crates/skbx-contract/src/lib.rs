@@ -678,6 +678,26 @@ pub struct KernelProbeLoss {
     pub reserve_failures: u64,
 }
 
+/// A lost observation, named down to the packet it belonged to.
+///
+/// This is the attribution that can restore absence as evidence. Given a
+/// capture where `kernel_skb_loss_unattributed` is zero, this table is
+/// exhaustive: a packet that does not appear in it lost nothing, so a function
+/// missing from that packet's chain was genuinely never reached rather than
+/// merely unobserved. The kernel table is a plain hash that refuses inserts
+/// when full rather than an LRU that evicts silently, which is what makes that
+/// negative claim provable instead of merely likely.
+///
+/// `skb` is the same identity emitted on every event, so this joins directly
+/// against a replayed chain.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelSkbLoss {
+    pub skb: String,
+    pub function: Option<FunctionRef>,
+    pub program_id: Option<u32>,
+    pub reserve_failures: u64,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reliability {
     pub kernel_reserve_failures: u64,
@@ -707,6 +727,58 @@ pub struct Reliability {
     /// `kernel_loss_by_probe` undercounts by exactly this much.
     #[serde(default)]
     pub kernel_unattributed_reserve_failures: u64,
+    /// Which observation of which packet was lost, ordered by packet.
+    #[serde(default)]
+    pub kernel_loss_by_skb: Vec<KernelSkbLoss>,
+    /// Losses the kernel could not file against a packet because the per-skb
+    /// table was full. While this is zero, `kernel_loss_by_skb` is exhaustive
+    /// and a packet absent from it provably lost nothing; once it is non-zero,
+    /// no such claim can be made about any packet.
+    #[serde(default)]
+    pub kernel_skb_loss_unattributed: u64,
+}
+
+impl Reliability {
+    /// Whether a packet absent from `kernel_loss_by_skb` can be treated as
+    /// having lost nothing.
+    ///
+    /// This is the difference between "this function was never hit" and "we
+    /// lost that one". It holds only while every loss was filed against a
+    /// packet; a single unfiled loss means any packet could be the one missing
+    /// an observation, so the claim collapses for all of them at once.
+    pub fn skb_loss_is_exhaustive(&self) -> bool {
+        self.kernel_skb_loss_unattributed == 0
+    }
+
+    /// Whether every lost observation in this capture could be filed against a
+    /// specific packet.
+    ///
+    /// Reserve failures are filed per packet, but the other loss kinds are not:
+    /// a recursion miss never reaches the emit path, and a decode, enrichment,
+    /// or output failure discards a record after the kernel has already handed
+    /// it over, by which point nothing knows which packet it described. Any of
+    /// those leaves a hole no packet can be cleared of, so all of them must be
+    /// zero before an absence anywhere in this capture may be read as evidence.
+    ///
+    /// Read failures are deliberately not included: they degrade fields within
+    /// an event that was still emitted, and each one is already visible on the
+    /// event that carries it.
+    pub fn loss_is_fully_attributed(&self) -> bool {
+        self.skb_loss_is_exhaustive()
+            && self.kernel_recursion_misses == 0
+            && self.userspace_decode_failures == 0
+            && self.userspace_enrichment_failures == 0
+            && self.output_failures == 0
+    }
+
+    /// Observations lost for one packet, by identity, across every probe.
+    pub fn losses_for_skb(&self, skb: &str) -> u64 {
+        self.kernel_loss_by_skb
+            .iter()
+            .filter(|loss| loss.skb == skb)
+            .map(|loss| loss.reserve_failures)
+            .sum()
+    }
 }
 
 impl Reliability {
@@ -762,6 +834,13 @@ pub struct TraceSummary {
     pub complete: bool,
     pub events: u64,
     pub distinct_skbs: usize,
+    /// Packets that lost every observation, so they appear in the footer's
+    /// per-packet loss ledger but nowhere in the capture itself. Previously
+    /// invisible: a packet whose whole chain was dropped left no trace at all.
+    /// Not counted in `distinct_skbs`, which only counts packets that were
+    /// actually observed.
+    #[serde(default)]
+    pub skbs_lost_entirely: usize,
     pub functions: BTreeMap<String, u64>,
     pub processes: BTreeMap<String, u64>,
     #[serde(default)]
@@ -1215,7 +1294,25 @@ pub fn json_schema() -> serde_json::Value {
                         "type": "array",
                         "items": {"$ref": "#/$defs/KernelProbeLoss"}
                     },
-                    "kernel_unattributed_reserve_failures": {"type": "integer", "minimum": 0}
+                    "kernel_unattributed_reserve_failures": {"type": "integer", "minimum": 0},
+                    "kernel_loss_by_skb": {
+                        "type": "array",
+                        "items": {"$ref": "#/$defs/KernelSkbLoss"}
+                    },
+                    "kernel_skb_loss_unattributed": {"type": "integer", "minimum": 0}
+                },
+                "additionalProperties": false
+            },
+            "KernelSkbLoss": {
+                "type": "object",
+                "required": ["skb", "function", "program_id", "reserve_failures"],
+                "properties": {
+                    "skb": {"type": "string"},
+                    "function": {
+                        "oneOf": [{"$ref": "#/$defs/FunctionRef"}, {"type": "null"}]
+                    },
+                    "program_id": {"type": ["integer", "null"], "minimum": 0},
+                    "reserve_failures": {"type": "integer", "minimum": 0}
                 },
                 "additionalProperties": false
             },
@@ -1357,6 +1454,89 @@ mod tests {
         assert_eq!(reliability.kernel_reserve_failures, 2);
         assert!(reliability.kernel_loss_by_cpu.is_empty());
         assert!(!reliability.complete());
+    }
+
+    fn skb_loss(skb: &str, symbol: &str, reserve_failures: u64) -> KernelSkbLoss {
+        KernelSkbLoss {
+            skb: skb.into(),
+            function: Some(FunctionRef {
+                address: "0xffffffff81234560".into(),
+                symbol: Some(symbol.into()),
+            }),
+            program_id: None,
+            reserve_failures,
+        }
+    }
+
+    #[test]
+    fn an_exhaustive_skb_table_clears_the_packets_absent_from_it() {
+        let reliability = Reliability {
+            kernel_reserve_failures: 3,
+            kernel_loss_by_skb: vec![skb_loss("0xaaa", "nf_hook_slow", 3)],
+            ..Reliability::default()
+        };
+
+        assert!(reliability.loss_is_fully_attributed());
+        assert_eq!(reliability.losses_for_skb("0xaaa"), 3);
+        // The packet nobody filed a loss against is the one whose absences can
+        // be read as evidence.
+        assert_eq!(reliability.losses_for_skb("0xbbb"), 0);
+    }
+
+    #[test]
+    fn one_unfiled_loss_collapses_the_claim_for_every_packet() {
+        let reliability = Reliability {
+            kernel_reserve_failures: 4,
+            kernel_loss_by_skb: vec![skb_loss("0xaaa", "nf_hook_slow", 3)],
+            kernel_skb_loss_unattributed: 1,
+            ..Reliability::default()
+        };
+
+        assert!(!reliability.skb_loss_is_exhaustive());
+        assert!(!reliability.loss_is_fully_attributed());
+        // 0xbbb still reports zero filed losses, which is exactly why the
+        // exhaustiveness flag has to be consulted first.
+        assert_eq!(reliability.losses_for_skb("0xbbb"), 0);
+    }
+
+    #[test]
+    fn loss_that_no_packet_owns_defeats_attribution() {
+        // Each of these discards a record after the kernel handed it over, or
+        // before it ever reached the emit path, so no packet can be cleared.
+        for defeat in [
+            Reliability {
+                kernel_recursion_misses: 1,
+                ..Reliability::default()
+            },
+            Reliability {
+                userspace_decode_failures: 1,
+                ..Reliability::default()
+            },
+            Reliability {
+                userspace_enrichment_failures: 1,
+                ..Reliability::default()
+            },
+            Reliability {
+                output_failures: 1,
+                ..Reliability::default()
+            },
+        ] {
+            assert!(defeat.skb_loss_is_exhaustive());
+            assert!(!defeat.loss_is_fully_attributed(), "{defeat:?}");
+        }
+    }
+
+    #[test]
+    fn read_failures_do_not_defeat_attribution() {
+        // A read failure degrades fields on an event that was still emitted,
+        // and is already visible on that event.
+        let reliability = Reliability {
+            kernel_read_failures: 9,
+            kernel_filtered_events: 500,
+            ..Reliability::default()
+        };
+
+        assert!(reliability.loss_is_fully_attributed());
     }
 
     #[test]

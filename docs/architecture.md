@@ -54,10 +54,32 @@ The per-CPU breakdown has no such gap — it comes from the same map read as the
 totals, so it sums to `kernel_reserve_failures` exactly, in whole captures and
 in segments alike.
 
-A hole that is attributed to a probe still says only that this probe failed to
-emit at least once. It does not identify which packet lost that observation, so
-`complete: false` continues to downgrade every absence in the capture — the
-attribution narrows where to look, it does not restore the absence as evidence.
+`kernel_loss_by_skb` files each hole against the packet it belonged to, keyed
+by the same identity stamped on every event, so it joins directly against a
+replayed chain. That table is a plain hash rather than an LRU: a full LRU
+evicts silently, and a silently evicted entry would make a packet look like it
+lost nothing. A plain hash refuses the insert and counts it in
+`kernel_skb_loss_unattributed` instead.
+
+That refusal is what makes the table's negative claim provable. While
+`kernel_skb_loss_unattributed` is zero the table is exhaustive, so a packet
+absent from it lost nothing, and a function missing from that packet's chain
+was never reached rather than merely unobserved. This is the one condition
+under which absence is evidence, and it is reported per packet by `explain` as
+`complete`, `lost`, or `unknown`.
+
+Reserve failures are the only loss kind that can be filed against a packet. A
+recursion miss never reaches the emit path, and a decode, enrichment or output
+failure discards a record after the kernel has handed it over, by which point
+nothing knows which packet it described. Any of those leaves a hole no packet
+can be cleared of, so all of them must be zero before any absence in the
+capture may be read as evidence. Read failures are excluded: they degrade
+fields on an event that was still emitted and are already visible on it.
+
+A packet can appear in the ledger without appearing in the capture — that is
+exactly a packet whose every observation was dropped, previously invisible.
+Replay counts these as `skbs_lost_entirely`, separate from `distinct_skbs`,
+which counts only packets actually observed.
 
 ## Pipeline
 
