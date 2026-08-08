@@ -789,7 +789,7 @@ mod tests {
     #[test]
     fn reliability_totals_still_match_the_per_cpu_breakdown() {
         let stats = stats_by_cpu(&[(2, 0, 10), (0, 0, 40), (3, 1, 0)]);
-        let reliability = stats.into_reliability(0, 0, 0);
+        let reliability = stats.into_reliability(0, 0, 0, Vec::new());
 
         assert_eq!(reliability.kernel_reserve_failures, 5);
         assert_eq!(reliability.kernel_read_failures, 1);
@@ -824,7 +824,12 @@ mod tests {
         let stats = stats_by_cpu(&[(0, 0, 900), (0, 0, 12)]);
 
         assert!(stats.loss_by_cpu().is_empty());
-        assert_eq!(stats.into_reliability(0, 0, 0).kernel_filtered_events, 912);
+        assert_eq!(
+            stats
+                .into_reliability(0, 0, 0, Vec::new())
+                .kernel_filtered_events,
+            912
+        );
     }
 
     #[test]
@@ -842,7 +847,7 @@ mod tests {
             },
         ]);
 
-        let reliability = stats.into_reliability(0, 0, 0);
+        let reliability = stats.into_reliability(0, 0, 0, Vec::new());
 
         assert_eq!(reliability.kernel_reserve_failures, 9);
         assert_eq!(reliability.kernel_unattributed_reserve_failures, 6);
@@ -874,8 +879,23 @@ mod tests {
     }
 
     #[test]
+    fn the_probe_breakdown_is_carried_through_rather_than_dropped() {
+        // The parameter exists so this cannot be forgotten; assert it lands.
+        let probes = vec![KernelProbeLoss {
+            function: None,
+            program_id: Some(7),
+            reserve_failures: 3,
+        }];
+
+        let reliability = stats_by_cpu(&[(3, 0, 0)]).into_reliability(0, 0, 0, probes.clone());
+
+        assert_eq!(reliability.kernel_loss_by_probe, probes);
+    }
+
+    #[test]
     fn a_lossless_capture_reports_an_empty_breakdown_not_a_missing_one() {
-        let reliability = stats_by_cpu(&[(0, 0, 0), (0, 0, 0)]).into_reliability(0, 0, 0);
+        let reliability =
+            stats_by_cpu(&[(0, 0, 0), (0, 0, 0)]).into_reliability(0, 0, 0, Vec::new());
 
         assert!(reliability.complete());
         assert!(reliability.kernel_loss_by_cpu.is_empty());
