@@ -14,7 +14,7 @@ pub use raw::{
     READ_NETNS_FAILED, READ_PROTOCOL_FAILED, READ_TUNNEL_TUPLE_FAILED, READ_TUPLE_FAILED,
     RawBpfProgram, RawBtfDumps, RawBtfTraceEvent, RawMapMetadataTraceEvent, RawMapTraceEvent,
     RawMetadata, RawMetadataTraceEvent, RawObservation, RawPacketTuple, RawProgramBtfTraceEvent,
-    RawProgramMetadataTraceEvent, RawProgramTraceEvent, RawTraceEvent,
+    RawProgramMetadataTraceEvent, RawProgramTraceEvent, RawTraceEvent, SkbLoss, SkbLossKey,
 };
 
 #[cfg(feature = "ebpf")]

@@ -1,4 +1,4 @@
-use skbx_contract::{KernelCpuLoss, KernelProbeLoss, Reliability};
+use skbx_contract::{KernelCpuLoss, KernelProbeLoss, KernelSkbLoss, Reliability};
 
 pub const READ_LEN_FAILED: u16 = 1 << 0;
 pub const READ_PROTOCOL_FAILED: u16 = 1 << 1;
@@ -489,6 +489,10 @@ pub struct KernelStats {
     /// probe-site map was full. Counted here rather than dropped so the
     /// per-probe breakdown never has to be read as exhaustive.
     pub unattributed_reserve_failures: u64,
+    /// Losses the kernel could not file against a packet because the per-skb
+    /// table was full. While this is zero the per-skb table is exhaustive, and
+    /// a packet missing from it provably lost nothing.
+    pub unattributed_skb_losses: u64,
 }
 
 /// Identifies the probe that failed to emit, mirroring `struct probe_site_key`
@@ -529,6 +533,40 @@ pub struct ProbeSiteLoss {
     pub reserve_failures: u64,
 }
 
+/// Mirrors `struct skb_loss_key` in the BPF object: which observation of which
+/// packet was lost. `identity` is the same value stamped into emitted records,
+/// so it joins directly against the chain a replay reconstructs.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SkbLossKey {
+    pub identity: u64,
+    pub site: ProbeSiteKey,
+}
+
+impl SkbLossKey {
+    pub const BYTE_LEN: usize = 24;
+
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != Self::BYTE_LEN {
+            return None;
+        }
+        Some(Self {
+            identity: u64::from_ne_bytes(bytes[0..8].try_into().ok()?),
+            site: ProbeSiteKey {
+                function_ip: u64::from_ne_bytes(bytes[8..16].try_into().ok()?),
+                program_id: u32::from_ne_bytes(bytes[16..20].try_into().ok()?),
+                _pad: 0,
+            },
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SkbLoss {
+    pub key: SkbLossKey,
+    pub reserve_failures: u64,
+}
+
 /// Kernel counters as the per-CPU array actually holds them, indexed by CPU id.
 ///
 /// The counters live in a `BPF_MAP_TYPE_PERCPU_ARRAY`, so the breakdown is free
@@ -561,6 +599,9 @@ impl KernelStatsByCpu {
                 total.unattributed_reserve_failures = total
                     .unattributed_reserve_failures
                     .saturating_add(stats.unattributed_reserve_failures);
+                total.unattributed_skb_losses = total
+                    .unattributed_skb_losses
+                    .saturating_add(stats.unattributed_skb_losses);
                 total
             })
     }
@@ -580,16 +621,17 @@ impl KernelStatsByCpu {
             .collect()
     }
 
-    /// `loss_by_probe` is a parameter rather than a field the caller patches in
-    /// afterwards: leaving it to the caller means a future third call site can
-    /// drop the attribution silently, and a dropped breakdown reads exactly
-    /// like a capture that lost nothing per probe.
+    /// The breakdowns are parameters rather than fields the caller patches in
+    /// afterwards: leaving them to the caller means a future call site can drop
+    /// attribution silently, and a dropped breakdown reads exactly like a
+    /// capture that lost nothing.
     pub fn into_reliability(
         self,
         recursion_misses: u64,
         decode_failures: u64,
         enrichment_failures: u64,
         loss_by_probe: Vec<KernelProbeLoss>,
+        loss_by_skb: Vec<KernelSkbLoss>,
     ) -> Reliability {
         let total = self.total();
         Reliability {
@@ -602,9 +644,11 @@ impl KernelStatsByCpu {
             output_failures: 0,
             kernel_loss_by_cpu: self.loss_by_cpu(),
             kernel_unattributed_reserve_failures: total.unattributed_reserve_failures,
+            kernel_skb_loss_unattributed: total.unattributed_skb_losses,
             // Resolved by the caller, which owns the symbol table needed to turn
             // a probe site address into a function name.
             kernel_loss_by_probe: loss_by_probe,
+            kernel_loss_by_skb: loss_by_skb,
         }
     }
 }
@@ -780,6 +824,7 @@ mod tests {
                         read_failures,
                         filtered_events,
                         unattributed_reserve_failures: 0,
+                        unattributed_skb_losses: 0,
                     },
                 )
                 .collect(),
@@ -789,7 +834,7 @@ mod tests {
     #[test]
     fn reliability_totals_still_match_the_per_cpu_breakdown() {
         let stats = stats_by_cpu(&[(2, 0, 10), (0, 0, 40), (3, 1, 0)]);
-        let reliability = stats.into_reliability(0, 0, 0, Vec::new());
+        let reliability = stats.into_reliability(0, 0, 0, Vec::new(), Vec::new());
 
         assert_eq!(reliability.kernel_reserve_failures, 5);
         assert_eq!(reliability.kernel_read_failures, 1);
@@ -826,7 +871,7 @@ mod tests {
         assert!(stats.loss_by_cpu().is_empty());
         assert_eq!(
             stats
-                .into_reliability(0, 0, 0, Vec::new())
+                .into_reliability(0, 0, 0, Vec::new(), Vec::new())
                 .kernel_filtered_events,
             912
         );
@@ -847,7 +892,7 @@ mod tests {
             },
         ]);
 
-        let reliability = stats.into_reliability(0, 0, 0, Vec::new());
+        let reliability = stats.into_reliability(0, 0, 0, Vec::new(), Vec::new());
 
         assert_eq!(reliability.kernel_reserve_failures, 9);
         assert_eq!(reliability.kernel_unattributed_reserve_failures, 6);
@@ -887,7 +932,8 @@ mod tests {
             reserve_failures: 3,
         }];
 
-        let reliability = stats_by_cpu(&[(3, 0, 0)]).into_reliability(0, 0, 0, probes.clone());
+        let reliability =
+            stats_by_cpu(&[(3, 0, 0)]).into_reliability(0, 0, 0, probes.clone(), Vec::new());
 
         assert_eq!(reliability.kernel_loss_by_probe, probes);
     }
@@ -895,7 +941,7 @@ mod tests {
     #[test]
     fn a_lossless_capture_reports_an_empty_breakdown_not_a_missing_one() {
         let reliability =
-            stats_by_cpu(&[(0, 0, 0), (0, 0, 0)]).into_reliability(0, 0, 0, Vec::new());
+            stats_by_cpu(&[(0, 0, 0), (0, 0, 0)]).into_reliability(0, 0, 0, Vec::new(), Vec::new());
 
         assert!(reliability.complete());
         assert!(reliability.kernel_loss_by_cpu.is_empty());
