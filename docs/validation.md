@@ -43,3 +43,18 @@ When adding a live gate:
 5. assert positive evidence and relevant negative filtering;
 6. require a complete footer with zero unexpected failures;
 7. print the retained trace path for debugging.
+
+"Zero unexpected failures" means every counter the gate can control. A gate
+that traces the kernel machinery skbx itself uses may see counters move for
+reasons that belong to the host rather than to the code, and must scope the
+assertion to say which counter that is and why, instead of either demanding a
+clean footer it cannot guarantee or dropping the check.
+
+`make live-bpf-helper` is the current example. Helper tracking attaches kprobes
+to the map helpers the tracer calls, so any concurrent BPF hash activity on the
+host re-enters the tracer and trips the kernel recursion guard. Those misses
+are genuine missed observations and the footer is right to report them, but
+they scale with what else is running: on an otherwise idle machine they are
+zero, and on a workstation they are reliably in the thousands. That gate
+therefore accepts an incomplete footer only when `kernel_recursion_misses`
+explains it, and keeps every other reliability counter at zero.
