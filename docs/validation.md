@@ -50,11 +50,26 @@ reasons that belong to the host rather than to the code, and must scope the
 assertion to say which counter that is and why, instead of either demanding a
 clean footer it cannot guarantee or dropping the check.
 
-`make live-bpf-helper` is the current example. Helper tracking attaches kprobes
+A gate whose capture is not scoped to its own traffic has the related
+problem: system-wide events fill the event budget, the evidence it needs is
+crowded out, and it passes or fails on host load. Scope the capture with a
+filter so the assertion is deterministic, rather than widening the assertion
+to tolerate the noise.
+
+`make live-bpf-helper` and `make live-stack-lifetime` are the current
+examples. Helper tracking attaches kprobes
 to the map helpers the tracer calls, so any concurrent BPF hash activity on the
 host re-enters the tracer and trips the kernel recursion guard. Those misses
 are genuine missed observations and the footer is right to report them, but
 they scale with what else is running: on an otherwise idle machine they are
-zero, and on a workstation they are reliably in the thousands. That gate
-therefore accepts an incomplete footer only when `kernel_recursion_misses`
-explains it, and keeps every other reliability counter at zero.
+zero, and on a workstation they are reliably in the thousands. `make live-stack-lifetime` kprobes `kmem_cache_free`, which the tracer's own
+teardown path reaches, and had the same problem twice over: it also captured
+`consume_skb` unfiltered, so on a busy host 1024 unrelated events filled the
+budget before the lifetime triple it asserts on could appear.
+
+Both gates therefore accept an incomplete footer only when
+`kernel_recursion_misses` explains it, and keep every other reliability
+counter at zero. `live-stack-lifetime` additionally scopes its capture to
+`icmp`, which is the traffic it generates: measured under four concurrent
+iperf3 streams that produced 30 events and 20 stack associations on every
+run, against 1024 capped events and a 15-to-30 spread unfiltered.
