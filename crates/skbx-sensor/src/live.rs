@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::{OsStr, c_void};
 use std::mem;
 use std::os::fd::{AsFd, AsRawFd};
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::ptr::NonNull;
 use std::slice;
@@ -907,7 +908,7 @@ fn attach_dynamic_programs(
         let mut dynamic_config = *config;
         dynamic_config.dynamic_program_id = target.id;
         dynamic_config.dynamic_program_kind = raw_kind;
-        dynamic_config.dynamic_program_name = fixed_bytes::<16>(target.name.as_c_str().to_bytes());
+        dynamic_config.dynamic_program_name = fixed_bytes::<16>(target.name.as_os_str().as_bytes());
         dynamic_config.dynamic_program_entry = fixed_bytes::<64>(entry.as_bytes());
 
         let mut builder = ObjectBuilder::default();
