@@ -4,9 +4,10 @@ use nix::sched::{CloneFlags, setns};
 use skbx_contract::{
     BpfMapOperation, BpfMapOperationKind, BpfProgramAction, BpfProgramKind, BpfProgramPhase,
     BpfProgramRef, BtfDump, CONTRACT_VERSION, CaptureEnd, CaptureFilters, CaptureLimits,
-    CaptureStart, Describe, Envelope, EventAssociation, FunctionRef, MatchOrigin, MetadataEncoding,
-    MetadataScalar, MetadataValue, PacketMeta, PacketTuple, PresentedTimestamp, Reliability,
-    StopReason, TimestampMode, TraceEvent,
+    CaptureStart, Describe, Envelope, EventAssociation, FunctionRef, KernelCpuLoss,
+    KernelProbeLoss, KernelSkbLoss, MatchOrigin, MetadataEncoding, MetadataScalar, MetadataValue,
+    PacketMeta, PacketTuple, PresentedTimestamp, Reliability, StopReason, TimestampMode,
+    TraceEvent,
 };
 use skbx_core::{
     BoundedMap, DEFAULT_BTF_PATH, DropReasonTable, SymbolTable, build_dynamic_probe_plan,
@@ -14,7 +15,7 @@ use skbx_core::{
     ensure_btf_dump_support, event_handle, explain_with_context, replay, resolve_skb_filter,
     resolve_skb_metadata, resolve_xdp_filter, resolve_xdp_metadata,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -543,6 +544,57 @@ fn run(cli: Cli) -> Result<u8> {
                         summary.reliability.userspace_decode_failures,
                         summary.reliability.output_failures
                     );
+                    if !summary.reliability.kernel_loss_by_cpu.is_empty() {
+                        let cpus = summary
+                            .reliability
+                            .kernel_loss_by_cpu
+                            .iter()
+                            .map(|loss| {
+                                format!(
+                                    "cpu{}=reserve:{},read:{}",
+                                    loss.cpu, loss.reserve_failures, loss.read_failures
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        println!("Kernel loss by CPU: {cpus}");
+                    }
+                    for loss in &summary.reliability.kernel_loss_by_probe {
+                        let site = match (&loss.function, loss.program_id) {
+                            (Some(function), _) => display_function(function),
+                            (None, Some(id)) => format!("bpf_program:{id}"),
+                            (None, None) => "unknown".into(),
+                        };
+                        println!("Kernel loss at {site}: reserve={}", loss.reserve_failures);
+                    }
+                    if summary.reliability.kernel_unattributed_reserve_failures != 0 {
+                        println!(
+                            "Kernel loss unattributed: reserve={} (probe-site map full; per-probe list undercounts)",
+                            summary.reliability.kernel_unattributed_reserve_failures
+                        );
+                    }
+                    let affected = summary
+                        .reliability
+                        .kernel_loss_by_skb
+                        .iter()
+                        .map(|loss| loss.skb.as_str())
+                        .collect::<BTreeSet<_>>()
+                        .len();
+                    if summary.reliability.loss_is_fully_attributed() {
+                        println!(
+                            "Absence is evidence: every loss was filed against a packet, so any packet not among the {affected} affected provably lost nothing"
+                        );
+                        if summary.skbs_lost_entirely != 0 {
+                            println!(
+                                "Packets lost entirely: {} (every observation dropped; absent from the {} packets observed above)",
+                                summary.skbs_lost_entirely, summary.distinct_skbs
+                            );
+                        }
+                    } else if !summary.complete {
+                        println!(
+                            "Absence is not evidence: loss remains that no packet can be cleared of"
+                        );
+                    }
                 }
             }
             Ok(if summary.complete { 0 } else { 3 })
@@ -1105,10 +1157,19 @@ fn capture(
                     }
                     CaptureWriter::Segmented(writer) => {
                         writer.write_event(&event, || {
+                            // Attribution first, total second. The kernel bumps
+                            // the total before the per-probe map, so reading in
+                            // that same order lets a failure land in between and
+                            // be attributed without being counted, leaving the
+                            // breakdown larger than the total it refines.
+                            let probes = kernel_loss_by_probe(&sensor, &symbols)?;
+                            let skbs = kernel_loss_by_skb(&sensor, &symbols)?;
                             let current = sensor.stats()?.into_reliability(
                                 sensor.recursion_misses()?,
                                 sensor.decode_failures(),
                                 sensor.enrichment_failures(),
+                                probes,
+                                skbs,
                             );
                             let segment = reliability_delta(&current, &reliability_checkpoint);
                             reliability_checkpoint = current;
@@ -1120,11 +1181,17 @@ fn capture(
             }
         }
 
+        // Attribution before total, so the breakdown can only ever undercount
+        // the number it refines. See the segment boundary above.
+        let probes = kernel_loss_by_probe(&sensor, &symbols)?;
+        let skbs = kernel_loss_by_skb(&sensor, &symbols)?;
         let stats = sensor.stats()?;
         let reliability = stats.into_reliability(
             sensor.recursion_misses()?,
             sensor.decode_failures(),
             sensor.enrichment_failures(),
+            probes,
+            skbs,
         );
         let complete = reliability.complete();
         let end = CaptureEnd {
@@ -1677,7 +1744,167 @@ fn reliability_delta(current: &Reliability, previous: &Reliability) -> Reliabili
         output_failures: current
             .output_failures
             .saturating_sub(previous.output_failures),
+        kernel_loss_by_cpu: kernel_loss_by_cpu_delta(
+            &current.kernel_loss_by_cpu,
+            &previous.kernel_loss_by_cpu,
+        ),
+        kernel_loss_by_probe: kernel_loss_by_probe_delta(
+            &current.kernel_loss_by_probe,
+            &previous.kernel_loss_by_probe,
+        ),
+        kernel_unattributed_reserve_failures: current
+            .kernel_unattributed_reserve_failures
+            .saturating_sub(previous.kernel_unattributed_reserve_failures),
+        kernel_loss_by_skb: kernel_loss_by_skb_delta(
+            &current.kernel_loss_by_skb,
+            &previous.kernel_loss_by_skb,
+        ),
+        kernel_skb_loss_unattributed: current
+            .kernel_skb_loss_unattributed
+            .saturating_sub(previous.kernel_skb_loss_unattributed),
     }
+}
+
+/// Matched on packet identity and probe together, since one packet can lose
+/// observations at several probes and each is its own ledger line.
+fn kernel_loss_by_skb_delta(
+    current: &[KernelSkbLoss],
+    previous: &[KernelSkbLoss],
+) -> Vec<KernelSkbLoss> {
+    let site = |loss: &KernelSkbLoss| {
+        (
+            loss.skb.clone(),
+            loss.function
+                .as_ref()
+                .map(|function| function.address.clone()),
+            loss.program_id,
+        )
+    };
+    let mut segment: Vec<KernelSkbLoss> = current
+        .iter()
+        .filter_map(|now| {
+            let before = previous.iter().find(|earlier| site(earlier) == site(now));
+            let reserve_failures = now
+                .reserve_failures
+                .saturating_sub(before.map_or(0, |earlier| earlier.reserve_failures));
+            (reserve_failures != 0).then(|| KernelSkbLoss {
+                skb: now.skb.clone(),
+                function: now.function.clone(),
+                program_id: now.program_id,
+                reserve_failures,
+            })
+        })
+        .collect();
+    segment.sort_by_key(site);
+    segment
+}
+
+/// Resolves each losing probe site to a name. A kernel site carries its
+/// instruction pointer symbolized against kallsyms; a TC/XDP site carries the
+/// BPF program id, which needs no lookup.
+fn kernel_loss_by_probe(
+    sensor: &skbx_sensor::LiveSensor,
+    symbols: &SymbolTable,
+) -> Result<Vec<KernelProbeLoss>> {
+    Ok(sensor
+        .probe_loss()?
+        .into_iter()
+        .map(|loss| KernelProbeLoss {
+            function: (loss.site.function_ip != 0).then(|| FunctionRef {
+                address: format!("{:#x}", loss.site.function_ip),
+                symbol: symbols.resolve(loss.site.function_ip).map(str::to_owned),
+            }),
+            program_id: (loss.site.program_id != 0).then_some(loss.site.program_id),
+            reserve_failures: loss.reserve_failures,
+        })
+        .collect())
+}
+
+/// Resolves each lost observation to the packet and probe it belonged to. The
+/// identity is formatted exactly as events format theirs, so a reader can join
+/// this against a replayed chain without reformatting either side.
+fn kernel_loss_by_skb(
+    sensor: &skbx_sensor::LiveSensor,
+    symbols: &SymbolTable,
+) -> Result<Vec<KernelSkbLoss>> {
+    Ok(sensor
+        .skb_loss()?
+        .into_iter()
+        .map(|loss| KernelSkbLoss {
+            skb: format!("{:#x}", loss.key.identity),
+            function: (loss.key.site.function_ip != 0).then(|| FunctionRef {
+                address: format!("{:#x}", loss.key.site.function_ip),
+                symbol: symbols
+                    .resolve(loss.key.site.function_ip)
+                    .map(str::to_owned),
+            }),
+            program_id: (loss.key.site.program_id != 0).then_some(loss.key.site.program_id),
+            reserve_failures: loss.reserve_failures,
+        })
+        .collect())
+}
+
+/// Probes are matched on their site, not their position: the list is ordered by
+/// loss, so a probe can move between checkpoints as other probes overtake it.
+fn kernel_loss_by_probe_delta(
+    current: &[KernelProbeLoss],
+    previous: &[KernelProbeLoss],
+) -> Vec<KernelProbeLoss> {
+    let site = |loss: &KernelProbeLoss| {
+        (
+            loss.function
+                .as_ref()
+                .map(|function| function.address.clone()),
+            loss.program_id,
+        )
+    };
+    let mut segment: Vec<KernelProbeLoss> = current
+        .iter()
+        .filter_map(|now| {
+            let before = previous.iter().find(|earlier| site(earlier) == site(now));
+            let reserve_failures = now
+                .reserve_failures
+                .saturating_sub(before.map_or(0, |earlier| earlier.reserve_failures));
+            (reserve_failures != 0).then(|| KernelProbeLoss {
+                function: now.function.clone(),
+                program_id: now.program_id,
+                reserve_failures,
+            })
+        })
+        .collect();
+    segment.sort_by(|a, b| {
+        b.reserve_failures
+            .cmp(&a.reserve_failures)
+            .then_with(|| site(a).cmp(&site(b)))
+    });
+    segment
+}
+
+/// A CPU absent from `previous` lost nothing before this segment, so its
+/// current count is entirely this segment's. A CPU that lost nothing new is
+/// dropped rather than carried as a zero, matching the live readout's rule
+/// that only CPUs with loss appear.
+fn kernel_loss_by_cpu_delta(
+    current: &[KernelCpuLoss],
+    previous: &[KernelCpuLoss],
+) -> Vec<KernelCpuLoss> {
+    current
+        .iter()
+        .filter_map(|now| {
+            let before = previous.iter().find(|earlier| earlier.cpu == now.cpu);
+            let reserve_failures = now
+                .reserve_failures
+                .saturating_sub(before.map_or(0, |earlier| earlier.reserve_failures));
+            let read_failures = now
+                .read_failures
+                .saturating_sub(before.map_or(0, |earlier| earlier.read_failures));
+            (reserve_failures != 0 || read_failures != 0).then_some(KernelCpuLoss {
+                cpu: now.cpu,
+                reserve_failures,
+                read_failures,
+            })
+        })
+        .collect()
 }
 
 fn packet_tuple(raw: &skbx_sensor::RawPacketTuple) -> Option<PacketTuple> {
@@ -2036,6 +2263,108 @@ fn install_signal_handlers() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn loss(cpu: u32, reserve_failures: u64, read_failures: u64) -> KernelCpuLoss {
+        KernelCpuLoss {
+            cpu,
+            reserve_failures,
+            read_failures,
+        }
+    }
+
+    #[test]
+    fn segment_loss_is_attributed_per_cpu_not_just_totalled() {
+        let previous = Reliability {
+            kernel_reserve_failures: 4,
+            kernel_loss_by_cpu: vec![loss(1, 4, 0)],
+            ..Reliability::default()
+        };
+        let current = Reliability {
+            kernel_reserve_failures: 11,
+            kernel_loss_by_cpu: vec![loss(1, 6, 0), loss(5, 5, 3)],
+            ..Reliability::default()
+        };
+
+        let segment = reliability_delta(&current, &previous);
+
+        assert_eq!(segment.kernel_reserve_failures, 7);
+        assert_eq!(
+            segment.kernel_loss_by_cpu,
+            vec![loss(1, 2, 0), loss(5, 5, 3)]
+        );
+    }
+
+    fn probe(symbol: &str, reserve_failures: u64) -> KernelProbeLoss {
+        KernelProbeLoss {
+            function: Some(FunctionRef {
+                address: format!("0x{:x}", symbol.len()),
+                symbol: Some(symbol.into()),
+            }),
+            program_id: None,
+            reserve_failures,
+        }
+    }
+
+    #[test]
+    fn segment_probe_loss_matches_sites_across_a_reordering() {
+        // `nf_hook_slow` overtakes `ip_rcv` between checkpoints, so positional
+        // matching would subtract each probe's count from the other's.
+        let previous = Reliability {
+            kernel_loss_by_probe: vec![probe("ip_rcv", 10), probe("nf_hook_slow", 3)],
+            ..Reliability::default()
+        };
+        let current = Reliability {
+            kernel_loss_by_probe: vec![probe("nf_hook_slow", 40), probe("ip_rcv", 12)],
+            ..Reliability::default()
+        };
+
+        let segment = reliability_delta(&current, &previous);
+
+        assert_eq!(
+            segment.kernel_loss_by_probe,
+            vec![probe("nf_hook_slow", 37), probe("ip_rcv", 2)]
+        );
+    }
+
+    #[test]
+    fn a_probe_absent_from_the_previous_checkpoint_counts_in_full() {
+        let current = Reliability {
+            kernel_loss_by_probe: vec![probe("ip_rcv", 5)],
+            ..Reliability::default()
+        };
+
+        let segment = reliability_delta(&current, &Reliability::default());
+
+        assert_eq!(segment.kernel_loss_by_probe, vec![probe("ip_rcv", 5)]);
+    }
+
+    #[test]
+    fn a_probe_with_no_new_loss_leaves_the_segment_breakdown() {
+        let previous = Reliability {
+            kernel_loss_by_probe: vec![probe("ip_rcv", 5)],
+            ..Reliability::default()
+        };
+
+        assert!(
+            reliability_delta(&previous, &previous)
+                .kernel_loss_by_probe
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_cpu_with_no_new_loss_leaves_the_segment_breakdown() {
+        let previous = Reliability {
+            kernel_reserve_failures: 4,
+            kernel_loss_by_cpu: vec![loss(1, 4, 0)],
+            ..Reliability::default()
+        };
+
+        let segment = reliability_delta(&previous, &previous);
+
+        assert_eq!(segment.kernel_reserve_failures, 0);
+        assert!(segment.kernel_loss_by_cpu.is_empty());
+    }
 
     #[test]
     fn pwru_text_presentation_flags_parse_explicit_booleans() {

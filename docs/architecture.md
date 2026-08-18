@@ -26,6 +26,61 @@ The footer carries kernel loss, user-space decode failures, output failures
 and the stop reason. This prevents a partial trace from silently looking
 authoritative.
 
+Kernel loss is reported as a total plus two independent breakdowns, not their
+cross product. `kernel_loss_by_cpu` attributes a hole to the core it happened
+on; the kernel keeps those counters in a per-CPU array, so that view costs
+nothing to carry. `kernel_loss_by_probe` attributes it to the probe that could
+not emit — the kernel function, or the TC/XDP program id — which is what names
+the leg of the path a hole belongs to. Only CPUs and probes that lost something
+appear, and an empty array positively states that none did.
+
+The per-probe attribution is bounded by a fixed-size map. When a probe plan
+overflows it, the surplus lands in `kernel_unattributed_reserve_failures`
+rather than being misfiled against another probe. The breakdown is also a
+separate map read from the totals, taken while probes are still firing, so
+failures landing between the two reads are counted without being attributed.
+The kernel bumps the total before the attribution and userspace reads them in
+the opposite order, which keeps both effects pointing the same way:
+`kernel_loss_by_probe` undercounts and never exceeds
+`kernel_reserve_failures`, which remains the only authoritative total.
+
+A rotated segment footer is the exception: it holds the difference between two
+checkpoints of two separately sampled series, so a single segment's per-probe
+breakdown can exceed that segment's own total by however far the earlier
+checkpoint lagged. Measured values are reported rather than clamped, and the
+undercount still holds across all segments summed together.
+
+The per-CPU breakdown has no such gap — it comes from the same map read as the
+totals, so it sums to `kernel_reserve_failures` exactly, in whole captures and
+in segments alike.
+
+`kernel_loss_by_skb` files each hole against the packet it belonged to, keyed
+by the same identity stamped on every event, so it joins directly against a
+replayed chain. That table is a plain hash rather than an LRU: a full LRU
+evicts silently, and a silently evicted entry would make a packet look like it
+lost nothing. A plain hash refuses the insert and counts it in
+`kernel_skb_loss_unattributed` instead.
+
+That refusal is what makes the table's negative claim provable. While
+`kernel_skb_loss_unattributed` is zero the table is exhaustive, so a packet
+absent from it lost nothing, and a function missing from that packet's chain
+was never reached rather than merely unobserved. This is the one condition
+under which absence is evidence, and it is reported per packet by `explain` as
+`complete`, `lost`, or `unknown`.
+
+Reserve failures are the only loss kind that can be filed against a packet. A
+recursion miss never reaches the emit path, and a decode, enrichment or output
+failure discards a record after the kernel has handed it over, by which point
+nothing knows which packet it described. Any of those leaves a hole no packet
+can be cleared of, so all of them must be zero before any absence in the
+capture may be read as evidence. Read failures are excluded: they degrade
+fields on an event that was still emitted and are already visible on it.
+
+A packet can appear in the ledger without appearing in the capture — that is
+exactly a packet whose every observation was dropped, previously invisible.
+Replay counts these as `skbs_lost_entirely`, separate from `distinct_skbs`,
+which counts only packets actually observed.
+
 ## Pipeline
 
 ```text

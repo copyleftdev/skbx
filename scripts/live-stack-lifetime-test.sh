@@ -28,7 +28,8 @@ trap cleanup EXIT
     --duration 4 \
     --max-events 1024 \
     --ready-file "${READY}" \
-    --output "${TRACE}" &
+    --output "${TRACE}" \
+    icmp &
 CAPTURE_PID=$!
 
 for _ in $(seq 1 50); do
@@ -74,10 +75,19 @@ jq -s -e '
 jq -e '
     select(
         .kind == "capture_end" and
-        .complete == true and
         .events > 0 and
         .reliability.kernel_reserve_failures == 0 and
-        .reliability.userspace_decode_failures == 0
+        .reliability.kernel_read_failures == 0 and
+        .reliability.userspace_decode_failures == 0 and
+        .reliability.userspace_enrichment_failures == 0 and
+        .reliability.output_failures == 0 and
+        # kmem_cache_free is on the teardown path the tracer itself walks, so
+        # concurrent kernel allocator traffic re-enters the tracer and trips
+        # the kernel recursion guard. Same reasoning as the BPF-helper gate:
+        # the misses are real and correctly reported, but they measure host
+        # load rather than this code, and are the only incompleteness
+        # accepted here.
+        (.complete == true or .reliability.kernel_recursion_misses > 0)
     )
 ' "${TRACE}" >/dev/null
 

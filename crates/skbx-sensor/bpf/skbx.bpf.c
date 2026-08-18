@@ -295,7 +295,42 @@ struct kernel_stats {
     __u64 reserve_failures;
     __u64 read_failures;
     __u64 filtered_events;
+    __u64 unattributed_reserve_failures;
+    __u64 unattributed_skb_losses;
 };
+
+_Static_assert(sizeof(struct kernel_stats) == 40,
+               "kernel stats ABI changed");
+
+/* Identifies the probe that could not emit. A kernel-function probe is named
+ * by its instruction pointer; a TC/XDP program probe by the BPF program id.
+ * They occupy separate fields rather than one tagged word so that nothing has
+ * to assume a program id can never look like a kernel text address. */
+struct probe_site_key {
+    __u64 function_ip;
+    __u32 program_id;
+    __u32 _pad;
+};
+
+_Static_assert(sizeof(struct probe_site_key) == 16,
+               "probe site key ABI changed");
+
+#define MAX_PROBE_SITES 512
+
+/* Which observation of which packet was lost. The identity is the same value
+ * stamped into every emitted record, so a loss correlates directly with the
+ * chain a replay reconstructs for that packet. */
+struct skb_loss_key {
+    __u64 identity;
+    __u64 function_ip;
+    __u32 program_id;
+    __u32 _pad;
+};
+
+_Static_assert(sizeof(struct skb_loss_key) == 24,
+               "skb loss key ABI changed");
+
+#define MAX_SKB_LOSSES 4096
 
 struct metadata_access {
     __u32 offsets[MAX_METADATA_ACCESS_STEPS];
@@ -370,6 +405,31 @@ struct {
     __type(key, __u32);
     __type(value, struct kernel_stats);
 } telemetry SEC(".maps");
+
+/* Per-CPU so the increment needs no atomic, and so a hole keeps both the probe
+ * it belongs to and the core it happened on. Preallocated by the verifier at
+ * load time, so the failure path never allocates. Sized well above any probe
+ * plan; a plan that outgrows it degrades to the unattributed counter rather
+ * than to a wrong attribution. */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+    __uint(max_entries, MAX_PROBE_SITES);
+    __type(key, struct probe_site_key);
+    __type(value, __u64);
+} probe_site_loss SEC(".maps");
+
+/* Deliberately a plain hash and not an LRU. A full LRU evicts silently, and a
+ * silently evicted entry would make a packet look like it lost nothing. A plain
+ * hash refuses the insert instead, which is counted, so a capture reporting no
+ * unattributed skb losses proves this table is exhaustive — and that a packet
+ * absent from it genuinely lost nothing. That proof is the whole point of the
+ * table; an LRU would destroy it to save a bounded amount of memory. */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_SKB_LOSSES);
+    __type(key, struct skb_loss_key);
+    __type(value, __u64);
+} skb_loss SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_STACK_TRACE);
@@ -455,6 +515,83 @@ static __always_inline struct kernel_stats *stats(void)
 {
     __u32 key = 0;
     return bpf_map_lookup_elem(&telemetry, &key);
+}
+
+static __always_inline struct probe_site_key kernel_probe_site(
+    struct pt_regs *ctx)
+{
+    struct probe_site_key site;
+
+    __builtin_memset(&site, 0, sizeof(site));
+    site.function_ip = (__u64)PT_REGS_IP(ctx);
+    return site;
+}
+
+static __always_inline struct probe_site_key program_probe_site(void)
+{
+    struct probe_site_key site;
+
+    __builtin_memset(&site, 0, sizeof(site));
+    site.program_id = CONFIG.dynamic_program_id;
+    return site;
+}
+
+/* The total stays authoritative: it is bumped unconditionally, and the
+ * attribution is added on top. A capture whose probe plan overflowed the map
+ * therefore still reports the right number of holes, with the surplus landing
+ * in unattributed_reserve_failures instead of being silently misfiled. */
+static __always_inline void record_skb_loss(
+    struct kernel_stats *counters, struct probe_site_key site, __u64 identity)
+{
+    struct skb_loss_key key;
+    __u64 *lost;
+    __u64 first = 1;
+
+    __builtin_memset(&key, 0, sizeof(key));
+    key.identity = identity;
+    key.function_ip = site.function_ip;
+    key.program_id = site.program_id;
+    lost = bpf_map_lookup_elem(&skb_loss, &key);
+    if (lost) {
+        __sync_fetch_and_add(lost, 1);
+        return;
+    }
+    if (bpf_map_update_elem(&skb_loss, &key, &first, BPF_NOEXIST)) {
+        /* Either the table is full or another CPU inserted this key since the
+         * lookup. Looking again separates the two: on the race the entry now
+         * exists and the count belongs on it, and only a genuinely full table
+         * leaves nothing to add to. Unlike the per-CPU probe table, this value
+         * is shared, so a blind BPF_ANY overwrite here would discard the other
+         * CPU's count rather than join it. */
+        lost = bpf_map_lookup_elem(&skb_loss, &key);
+        if (lost)
+            __sync_fetch_and_add(lost, 1);
+        else if (counters)
+            counters->unattributed_skb_losses++;
+    }
+}
+
+static __always_inline void record_reserve_failure(
+    struct kernel_stats *counters, struct probe_site_key site, __u64 identity)
+{
+    __u64 *attributed;
+    __u64 first = 1;
+
+    if (counters)
+        counters->reserve_failures++;
+    record_skb_loss(counters, site, identity);
+    attributed = bpf_map_lookup_elem(&probe_site_loss, &site);
+    if (attributed) {
+        *attributed += 1;
+        return;
+    }
+    /* BPF_ANY rather than BPF_NOEXIST: another CPU may have inserted this key
+     * between the lookup and here, and this CPU's own slot is zero either way,
+     * so overwriting it with 1 is correct. The update then fails only when the
+     * map is genuinely full, which is the one case worth counting. */
+    if (bpf_map_update_elem(&probe_site_loss, &site, &first, BPF_ANY) &&
+        counters)
+        counters->unattributed_reserve_failures++;
 }
 
 static __always_inline int read_netns(struct sk_buff *skb, __u32 *netns_id)
@@ -1585,8 +1722,7 @@ static __always_inline int trace_skb_associated(struct pt_regs *ctx,
             bpf_map_lookup_elem(&btf_scratch, &key);
 
         if (!record) {
-            if (counters)
-                counters->reserve_failures++;
+            record_reserve_failure(counters, kernel_probe_site(ctx), identity);
             return 0;
         }
         __builtin_memset(&record->record, 0, sizeof(record->record));
@@ -1598,9 +1734,8 @@ static __always_inline int trace_skb_associated(struct pt_regs *ctx,
             record->components |= BTF_RECORD_COMPONENT_METADATA;
         }
         fill_btf_dumps(skb, &record->dumps, counters);
-        if (bpf_ringbuf_output(&events, record, sizeof(*record), 0) &&
-            counters)
-            counters->reserve_failures++;
+        if (bpf_ringbuf_output(&events, record, sizeof(*record), 0))
+            record_reserve_failure(counters, kernel_probe_site(ctx), identity);
         return 0;
     }
     if (CONFIG.metadata_count) {
@@ -1608,8 +1743,7 @@ static __always_inline int trace_skb_associated(struct pt_regs *ctx,
             bpf_ringbuf_reserve(&events, sizeof(*record), 0);
 
         if (!record) {
-            if (counters)
-                counters->reserve_failures++;
+            record_reserve_failure(counters, kernel_probe_site(ctx), identity);
             return 0;
         }
         __builtin_memset(record, 0, sizeof(*record));
@@ -1622,8 +1756,7 @@ static __always_inline int trace_skb_associated(struct pt_regs *ctx,
             bpf_ringbuf_reserve(&events, sizeof(*event), 0);
 
         if (!event) {
-            if (counters)
-                counters->reserve_failures++;
+            record_reserve_failure(counters, kernel_probe_site(ctx), identity);
             return 0;
         }
         fill_trace_event(ctx, skb, association, match, identity, event,
@@ -1708,8 +1841,7 @@ int skbx_trace_tc(__u64 *ctx)
             (struct skbx_program_btf_trace_event *)scratch;
 
         if (!record) {
-            if (counters)
-                counters->reserve_failures++;
+            record_reserve_failure(counters, program_probe_site(), identity);
             return 0;
         }
         __builtin_memset(&record->record, 0, sizeof(record->record));
@@ -1721,9 +1853,8 @@ int skbx_trace_tc(__u64 *ctx)
             record->components |= BTF_RECORD_COMPONENT_METADATA;
         }
         fill_btf_dumps(skb, &record->dumps, counters);
-        if (bpf_ringbuf_output(&events, record, sizeof(*record), 0) &&
-            counters)
-            counters->reserve_failures++;
+        if (bpf_ringbuf_output(&events, record, sizeof(*record), 0))
+            record_reserve_failure(counters, program_probe_site(), identity);
         return 0;
     }
     if (CONFIG.metadata_count) {
@@ -1731,8 +1862,7 @@ int skbx_trace_tc(__u64 *ctx)
             bpf_ringbuf_reserve(&events, sizeof(*record), 0);
 
         if (!record) {
-            if (counters)
-                counters->reserve_failures++;
+            record_reserve_failure(counters, program_probe_site(), identity);
             return 0;
         }
         fill_program_trace_event(ctx, skb, match, identity,
@@ -1744,8 +1874,7 @@ int skbx_trace_tc(__u64 *ctx)
             bpf_ringbuf_reserve(&events, sizeof(*record), 0);
 
         if (!record) {
-            if (counters)
-                counters->reserve_failures++;
+            record_reserve_failure(counters, program_probe_site(), identity);
             return 0;
         }
         fill_program_trace_event(ctx, skb, match, identity, record,
@@ -1802,8 +1931,7 @@ int skbx_trace_xdp(__u64 *ctx)
             bpf_ringbuf_reserve(&events, sizeof(*record), 0);
 
         if (!record) {
-            if (counters)
-                counters->reserve_failures++;
+            record_reserve_failure(counters, program_probe_site(), identity);
             return 0;
         }
         fill_xdp_program_trace_event(ctx, xdp, match, identity,
@@ -1816,8 +1944,7 @@ int skbx_trace_xdp(__u64 *ctx)
             bpf_ringbuf_reserve(&events, sizeof(*record), 0);
 
         if (!record) {
-            if (counters)
-                counters->reserve_failures++;
+            record_reserve_failure(counters, program_probe_site(), identity);
             return 0;
         }
         fill_xdp_program_trace_event(ctx, xdp, match, identity,
@@ -1853,8 +1980,7 @@ int skbx_trace_xdp_exit(__u64 *ctx)
             bpf_ringbuf_reserve(&events, sizeof(*record), 0);
 
         if (!record) {
-            if (counters)
-                counters->reserve_failures++;
+            record_reserve_failure(counters, program_probe_site(), identity);
             return 0;
         }
         fill_xdp_program_trace_event(ctx, xdp, match, identity,
@@ -1868,8 +1994,7 @@ int skbx_trace_xdp_exit(__u64 *ctx)
             bpf_ringbuf_reserve(&events, sizeof(*record), 0);
 
         if (!record) {
-            if (counters)
-                counters->reserve_failures++;
+            record_reserve_failure(counters, program_probe_site(), identity);
             return 0;
         }
         fill_xdp_program_trace_event(ctx, xdp, match, identity,
@@ -1964,8 +2089,7 @@ static __always_inline int trace_map_associated(struct pt_regs *ctx,
             bpf_map_lookup_elem(&btf_scratch, &key);
 
         if (!record) {
-            if (counters)
-                counters->reserve_failures++;
+            record_reserve_failure(counters, kernel_probe_site(ctx), identity);
             return 0;
         }
         __builtin_memset(&record->record, 0, sizeof(record->record));
@@ -1981,9 +2105,8 @@ static __always_inline int trace_map_associated(struct pt_regs *ctx,
         }
         fill_btf_dumps((struct sk_buff *)*skb_addr, &record->dumps,
                        counters);
-        if (bpf_ringbuf_output(&events, record, sizeof(*record), 0) &&
-            counters)
-            counters->reserve_failures++;
+        if (bpf_ringbuf_output(&events, record, sizeof(*record), 0))
+            record_reserve_failure(counters, kernel_probe_site(ctx), identity);
         return 0;
     }
     if (CONFIG.metadata_count) {
@@ -1991,8 +2114,7 @@ static __always_inline int trace_map_associated(struct pt_regs *ctx,
             bpf_ringbuf_reserve(&events, sizeof(*record), 0);
 
         if (!record) {
-            if (counters)
-                counters->reserve_failures++;
+            record_reserve_failure(counters, kernel_probe_site(ctx), identity);
             return 0;
         }
         __builtin_memset(record, 0, sizeof(*record));
@@ -2006,8 +2128,7 @@ static __always_inline int trace_map_associated(struct pt_regs *ctx,
             bpf_ringbuf_reserve(&events, sizeof(*record), 0);
 
         if (!record) {
-            if (counters)
-                counters->reserve_failures++;
+            record_reserve_failure(counters, kernel_probe_site(ctx), identity);
             return 0;
         }
         __builtin_memset(record, 0, sizeof(*record));

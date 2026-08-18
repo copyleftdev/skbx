@@ -631,6 +631,73 @@ pub struct CaptureSegmentEnd {
     pub next_seq: Option<u64>,
 }
 
+/// Observation loss attributed to the CPU that could not emit it.
+///
+/// The kernel keeps its counters in a per-CPU map, so this attribution is
+/// already paid for; summing it away on readout discarded the only locality
+/// the kernel side carries. It bounds a hole to a core, not to a probe: a
+/// non-zero entry says this CPU failed to emit something, not which function
+/// was being observed at the time.
+///
+/// Only CPUs that lost something appear. An absent CPU lost nothing — it is
+/// not an unobserved CPU.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelCpuLoss {
+    pub cpu: u32,
+    pub reserve_failures: u64,
+    pub read_failures: u64,
+}
+
+/// Observation loss attributed to the probe that could not emit it.
+///
+/// This is the finer of the two attributions: it names the leg of the path a
+/// hole belongs to, where [`KernelCpuLoss`] only bounds it to a core. Exactly
+/// one of `function` and `program_id` is set — a kernel-function probe carries
+/// the function it was attached to, a TC/XDP probe the BPF program id.
+///
+/// The list is not exhaustive, for two reasons, so a reader that needs the true
+/// number of holes must use `kernel_reserve_failures` rather than summing it.
+/// When the kernel's probe-site map is full, further failures are counted in
+/// `Reliability::kernel_unattributed_reserve_failures` instead. And the totals
+/// and the breakdown are separate map reads taken while probes are still
+/// firing, so failures landing between them are counted without being
+/// attributed. Both effects run the same direction: over a whole capture this
+/// list undercounts, and never exceeds, the total it refines.
+///
+/// A single segment footer is the one exception. It carries the difference
+/// between two checkpoints of two independently sampled series, so if the
+/// earlier checkpoint lagged further behind than the later one, that segment's
+/// breakdown can exceed the segment's own total by the difference. It is left
+/// as measured rather than clamped, because clamping would invent a number the
+/// kernel never reported. The undercount still holds across the segments summed
+/// together.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelProbeLoss {
+    pub function: Option<FunctionRef>,
+    pub program_id: Option<u32>,
+    pub reserve_failures: u64,
+}
+
+/// A lost observation, named down to the packet it belonged to.
+///
+/// This is the attribution that can restore absence as evidence. Given a
+/// capture where `kernel_skb_loss_unattributed` is zero, this table is
+/// exhaustive: a packet that does not appear in it lost nothing, so a function
+/// missing from that packet's chain was genuinely never reached rather than
+/// merely unobserved. The kernel table is a plain hash that refuses inserts
+/// when full rather than an LRU that evicts silently, which is what makes that
+/// negative claim provable instead of merely likely.
+///
+/// `skb` is the same identity emitted on every event, so this joins directly
+/// against a replayed chain.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelSkbLoss {
+    pub skb: String,
+    pub function: Option<FunctionRef>,
+    pub program_id: Option<u32>,
+    pub reserve_failures: u64,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reliability {
     pub kernel_reserve_failures: u64,
@@ -643,6 +710,75 @@ pub struct Reliability {
     #[serde(default)]
     pub userspace_enrichment_failures: u64,
     pub output_failures: u64,
+    /// Per-CPU breakdown of the kernel reserve/read failures totalled above.
+    ///
+    /// Always emitted, so an empty array positively states that no CPU lost
+    /// anything rather than leaving the reader to guess whether the writer
+    /// knew. Defaulted on read so captures written before this field parse.
+    #[serde(default)]
+    pub kernel_loss_by_cpu: Vec<KernelCpuLoss>,
+    /// Per-probe breakdown of the same reserve failures, ordered by loss
+    /// descending so the worst leg reads first. Independent of the per-CPU
+    /// view above rather than a cross product of it.
+    #[serde(default)]
+    pub kernel_loss_by_probe: Vec<KernelProbeLoss>,
+    /// Reserve failures that happened but could not be filed against a probe,
+    /// because the kernel's probe-site map was full. Non-zero means
+    /// `kernel_loss_by_probe` undercounts by exactly this much.
+    #[serde(default)]
+    pub kernel_unattributed_reserve_failures: u64,
+    /// Which observation of which packet was lost, ordered by packet.
+    #[serde(default)]
+    pub kernel_loss_by_skb: Vec<KernelSkbLoss>,
+    /// Losses the kernel could not file against a packet because the per-skb
+    /// table was full. While this is zero, `kernel_loss_by_skb` is exhaustive
+    /// and a packet absent from it provably lost nothing; once it is non-zero,
+    /// no such claim can be made about any packet.
+    #[serde(default)]
+    pub kernel_skb_loss_unattributed: u64,
+}
+
+impl Reliability {
+    /// Whether a packet absent from `kernel_loss_by_skb` can be treated as
+    /// having lost nothing.
+    ///
+    /// This is the difference between "this function was never hit" and "we
+    /// lost that one". It holds only while every loss was filed against a
+    /// packet; a single unfiled loss means any packet could be the one missing
+    /// an observation, so the claim collapses for all of them at once.
+    pub fn skb_loss_is_exhaustive(&self) -> bool {
+        self.kernel_skb_loss_unattributed == 0
+    }
+
+    /// Whether every lost observation in this capture could be filed against a
+    /// specific packet.
+    ///
+    /// Reserve failures are filed per packet, but the other loss kinds are not:
+    /// a recursion miss never reaches the emit path, and a decode, enrichment,
+    /// or output failure discards a record after the kernel has already handed
+    /// it over, by which point nothing knows which packet it described. Any of
+    /// those leaves a hole no packet can be cleared of, so all of them must be
+    /// zero before an absence anywhere in this capture may be read as evidence.
+    ///
+    /// Read failures are deliberately not included: they degrade fields within
+    /// an event that was still emitted, and each one is already visible on the
+    /// event that carries it.
+    pub fn loss_is_fully_attributed(&self) -> bool {
+        self.skb_loss_is_exhaustive()
+            && self.kernel_recursion_misses == 0
+            && self.userspace_decode_failures == 0
+            && self.userspace_enrichment_failures == 0
+            && self.output_failures == 0
+    }
+
+    /// Observations lost for one packet, by identity, across every probe.
+    pub fn losses_for_skb(&self, skb: &str) -> u64 {
+        self.kernel_loss_by_skb
+            .iter()
+            .filter(|loss| loss.skb == skb)
+            .map(|loss| loss.reserve_failures)
+            .sum()
+    }
 }
 
 impl Reliability {
@@ -698,6 +834,13 @@ pub struct TraceSummary {
     pub complete: bool,
     pub events: u64,
     pub distinct_skbs: usize,
+    /// Packets that lost every observation, so they appear in the footer's
+    /// per-packet loss ledger but nowhere in the capture itself. Previously
+    /// invisible: a packet whose whole chain was dropped left no trace at all.
+    /// Not counted in `distinct_skbs`, which only counts packets that were
+    /// actually observed.
+    #[serde(default)]
+    pub skbs_lost_entirely: usize,
     pub functions: BTreeMap<String, u64>,
     pub processes: BTreeMap<String, u64>,
     #[serde(default)]
@@ -1142,7 +1285,56 @@ pub fn json_schema() -> serde_json::Value {
                     "kernel_recursion_misses": {"type": "integer", "minimum": 0},
                     "userspace_decode_failures": {"type": "integer", "minimum": 0},
                     "userspace_enrichment_failures": {"type": "integer", "minimum": 0},
-                    "output_failures": {"type": "integer", "minimum": 0}
+                    "output_failures": {"type": "integer", "minimum": 0},
+                    "kernel_loss_by_cpu": {
+                        "type": "array",
+                        "items": {"$ref": "#/$defs/KernelCpuLoss"}
+                    },
+                    "kernel_loss_by_probe": {
+                        "type": "array",
+                        "items": {"$ref": "#/$defs/KernelProbeLoss"}
+                    },
+                    "kernel_unattributed_reserve_failures": {"type": "integer", "minimum": 0},
+                    "kernel_loss_by_skb": {
+                        "type": "array",
+                        "items": {"$ref": "#/$defs/KernelSkbLoss"}
+                    },
+                    "kernel_skb_loss_unattributed": {"type": "integer", "minimum": 0}
+                },
+                "additionalProperties": false
+            },
+            "KernelSkbLoss": {
+                "type": "object",
+                "required": ["skb", "function", "program_id", "reserve_failures"],
+                "properties": {
+                    "skb": {"type": "string"},
+                    "function": {
+                        "oneOf": [{"$ref": "#/$defs/FunctionRef"}, {"type": "null"}]
+                    },
+                    "program_id": {"type": ["integer", "null"], "minimum": 0},
+                    "reserve_failures": {"type": "integer", "minimum": 0}
+                },
+                "additionalProperties": false
+            },
+            "KernelProbeLoss": {
+                "type": "object",
+                "required": ["function", "program_id", "reserve_failures"],
+                "properties": {
+                    "function": {
+                        "oneOf": [{"$ref": "#/$defs/FunctionRef"}, {"type": "null"}]
+                    },
+                    "program_id": {"type": ["integer", "null"], "minimum": 0},
+                    "reserve_failures": {"type": "integer", "minimum": 0}
+                },
+                "additionalProperties": false
+            },
+            "KernelCpuLoss": {
+                "type": "object",
+                "required": ["cpu", "reserve_failures", "read_failures"],
+                "properties": {
+                    "cpu": {"type": "integer", "minimum": 0},
+                    "reserve_failures": {"type": "integer", "minimum": 0},
+                    "read_failures": {"type": "integer", "minimum": 0}
                 },
                 "additionalProperties": false
             }
@@ -1207,5 +1399,246 @@ mod tests {
     #[test]
     fn schema_is_version_pinned() {
         assert_eq!(json_schema()["$id"], EVENT_SCHEMA);
+    }
+
+    #[test]
+    fn per_cpu_loss_survives_a_serialization_round_trip() {
+        let reliability = Reliability {
+            kernel_reserve_failures: 9,
+            kernel_loss_by_cpu: vec![
+                KernelCpuLoss {
+                    cpu: 3,
+                    reserve_failures: 4,
+                    read_failures: 0,
+                },
+                KernelCpuLoss {
+                    cpu: 11,
+                    reserve_failures: 5,
+                    read_failures: 2,
+                },
+            ],
+            ..Reliability::default()
+        };
+        let encoded = serde_json::to_string(&reliability).expect("reliability serializes");
+
+        assert_eq!(
+            serde_json::from_str::<Reliability>(&encoded).expect("reliability parses"),
+            reliability
+        );
+    }
+
+    #[test]
+    fn a_lossless_capture_states_an_empty_breakdown_rather_than_omitting_it() {
+        let encoded = serde_json::to_value(Reliability::default()).expect("reliability serializes");
+
+        assert_eq!(
+            encoded["kernel_loss_by_cpu"],
+            serde_json::json!([]),
+            "an omitted field would be ambiguous between no loss and an older writer"
+        );
+    }
+
+    #[test]
+    fn captures_written_before_per_cpu_attribution_still_parse() {
+        let legacy = serde_json::json!({
+            "kernel_reserve_failures": 2,
+            "kernel_read_failures": 0,
+            "kernel_filtered_events": 0,
+            "userspace_decode_failures": 0,
+            "userspace_enrichment_failures": 0,
+            "output_failures": 0
+        });
+
+        let reliability: Reliability =
+            serde_json::from_value(legacy).expect("legacy reliability parses");
+        assert_eq!(reliability.kernel_reserve_failures, 2);
+        assert!(reliability.kernel_loss_by_cpu.is_empty());
+        assert!(!reliability.complete());
+    }
+
+    fn skb_loss(skb: &str, symbol: &str, reserve_failures: u64) -> KernelSkbLoss {
+        KernelSkbLoss {
+            skb: skb.into(),
+            function: Some(FunctionRef {
+                address: "0xffffffff81234560".into(),
+                symbol: Some(symbol.into()),
+            }),
+            program_id: None,
+            reserve_failures,
+        }
+    }
+
+    #[test]
+    fn an_exhaustive_skb_table_clears_the_packets_absent_from_it() {
+        let reliability = Reliability {
+            kernel_reserve_failures: 3,
+            kernel_loss_by_skb: vec![skb_loss("0xaaa", "nf_hook_slow", 3)],
+            ..Reliability::default()
+        };
+
+        assert!(reliability.loss_is_fully_attributed());
+        assert_eq!(reliability.losses_for_skb("0xaaa"), 3);
+        // The packet nobody filed a loss against is the one whose absences can
+        // be read as evidence.
+        assert_eq!(reliability.losses_for_skb("0xbbb"), 0);
+    }
+
+    #[test]
+    fn one_unfiled_loss_collapses_the_claim_for_every_packet() {
+        let reliability = Reliability {
+            kernel_reserve_failures: 4,
+            kernel_loss_by_skb: vec![skb_loss("0xaaa", "nf_hook_slow", 3)],
+            kernel_skb_loss_unattributed: 1,
+            ..Reliability::default()
+        };
+
+        assert!(!reliability.skb_loss_is_exhaustive());
+        assert!(!reliability.loss_is_fully_attributed());
+        // 0xbbb still reports zero filed losses, which is exactly why the
+        // exhaustiveness flag has to be consulted first.
+        assert_eq!(reliability.losses_for_skb("0xbbb"), 0);
+    }
+
+    #[test]
+    fn loss_that_no_packet_owns_defeats_attribution() {
+        // Each of these discards a record after the kernel handed it over, or
+        // before it ever reached the emit path, so no packet can be cleared.
+        for defeat in [
+            Reliability {
+                kernel_recursion_misses: 1,
+                ..Reliability::default()
+            },
+            Reliability {
+                userspace_decode_failures: 1,
+                ..Reliability::default()
+            },
+            Reliability {
+                userspace_enrichment_failures: 1,
+                ..Reliability::default()
+            },
+            Reliability {
+                output_failures: 1,
+                ..Reliability::default()
+            },
+        ] {
+            assert!(defeat.skb_loss_is_exhaustive());
+            assert!(!defeat.loss_is_fully_attributed(), "{defeat:?}");
+        }
+    }
+
+    #[test]
+    fn read_failures_do_not_defeat_attribution() {
+        // A read failure degrades fields on an event that was still emitted,
+        // and is already visible on that event.
+        let reliability = Reliability {
+            kernel_read_failures: 9,
+            kernel_filtered_events: 500,
+            ..Reliability::default()
+        };
+
+        assert!(reliability.loss_is_fully_attributed());
+    }
+
+    #[test]
+    fn per_probe_loss_names_the_leg_and_admits_undercounting() {
+        let reliability = Reliability {
+            kernel_reserve_failures: 12,
+            kernel_unattributed_reserve_failures: 5,
+            kernel_loss_by_probe: vec![
+                KernelProbeLoss {
+                    function: Some(FunctionRef {
+                        address: "0xffffffff81234560".into(),
+                        symbol: Some("nf_hook_slow".into()),
+                    }),
+                    program_id: None,
+                    reserve_failures: 7,
+                },
+                KernelProbeLoss {
+                    function: None,
+                    program_id: Some(42),
+                    reserve_failures: 0,
+                },
+            ],
+            ..Reliability::default()
+        };
+        let encoded = serde_json::to_string(&reliability).expect("reliability serializes");
+
+        assert_eq!(
+            serde_json::from_str::<Reliability>(&encoded).expect("reliability parses"),
+            reliability
+        );
+        // The per-probe list is a subset, so the total is the only number a
+        // reader may treat as the true count of holes. Deliberately `<=` and
+        // not `==`: the breakdown is read from a different map than the total,
+        // while probes are still firing, so it may legitimately lag.
+        let attributed: u64 = reliability
+            .kernel_loss_by_probe
+            .iter()
+            .map(|loss| loss.reserve_failures)
+            .sum();
+        assert!(
+            attributed + reliability.kernel_unattributed_reserve_failures
+                <= reliability.kernel_reserve_failures
+        );
+        assert!(!reliability.complete());
+    }
+
+    #[test]
+    fn captures_written_before_per_probe_attribution_still_parse() {
+        let legacy = serde_json::json!({
+            "kernel_reserve_failures": 2,
+            "kernel_read_failures": 0,
+            "kernel_filtered_events": 0,
+            "userspace_decode_failures": 0,
+            "userspace_enrichment_failures": 0,
+            "output_failures": 0,
+            "kernel_loss_by_cpu": [{"cpu": 1, "reserve_failures": 2, "read_failures": 0}]
+        });
+
+        let reliability: Reliability =
+            serde_json::from_value(legacy).expect("legacy reliability parses");
+        assert_eq!(reliability.kernel_loss_by_cpu.len(), 1);
+        assert!(reliability.kernel_loss_by_probe.is_empty());
+        assert_eq!(reliability.kernel_unattributed_reserve_failures, 0);
+    }
+
+    #[test]
+    fn schema_admits_the_per_probe_loss_breakdown() {
+        let schema = json_schema();
+        let reliability = &schema["$defs"]["Reliability"];
+
+        assert_eq!(
+            reliability["properties"]["kernel_loss_by_probe"]["items"]["$ref"],
+            "#/$defs/KernelProbeLoss"
+        );
+        assert!(
+            reliability["properties"]["kernel_unattributed_reserve_failures"]["type"] == "integer"
+        );
+        // The site reference must resolve, or every lossy capture fails
+        // validation on a dangling $ref.
+        assert!(schema["$defs"]["FunctionRef"].is_object());
+        assert!(schema["$defs"]["KernelProbeLoss"].is_object());
+    }
+
+    #[test]
+    fn schema_admits_the_per_cpu_loss_breakdown() {
+        let schema = json_schema();
+        let reliability = &schema["$defs"]["Reliability"];
+
+        // Reliability is additionalProperties:false, so an emitted field that
+        // the schema does not name would make every capture fail validation.
+        assert_eq!(
+            reliability["properties"]["kernel_loss_by_cpu"]["items"]["$ref"],
+            "#/$defs/KernelCpuLoss"
+        );
+        assert!(schema["$defs"]["KernelCpuLoss"].is_object());
+        // Not required: older captures legitimately lack it.
+        assert!(
+            !reliability["required"]
+                .as_array()
+                .expect("required is an array")
+                .iter()
+                .any(|field| field == "kernel_loss_by_cpu")
+        );
     }
 }
